@@ -1,0 +1,16 @@
+# Local config with private work context or Notion database IDs
+config.yaml
+
+# Runtime logs
+logs/*.log
+
+# OS files
+.DS_Store
+
+# Python/cache artifacts
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+.env.*

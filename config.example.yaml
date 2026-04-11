@@ -1,0 +1,103 @@
+# PaperPulse Configuration Example
+# Copy this file to config.yaml, then customize work context and archive settings.
+
+sources:
+  - name: arxiv
+    type: api
+    enabled: true
+    categories: [cs.CV, cs.AI, cs.CL, cs.LG, cs.MM]
+    description: "arXiv preprint server"
+
+  - name: huggingface_daily
+    type: web
+    enabled: true
+    url: "https://huggingface.co/papers"
+    description: "HuggingFace daily curated papers"
+
+  - name: semantic_scholar
+    type: api
+    enabled: false
+    description: "Semantic Scholar API; keep disabled unless you have stable API access."
+
+  - name: papers_with_code
+    type: web
+    enabled: false
+    url: "https://paperswithcode.com/latest"
+    description: "Often overlaps with HuggingFace Daily; use as a secondary signal only."
+
+  - name: blog_list
+    type: rss
+    enabled: true
+    urls:
+      - "https://lilianweng.github.io/index.xml"
+    description: "Research blogs and RSS feeds"
+
+  - name: web_search
+    type: websearch
+    enabled: true
+    queries:
+      - "latest multimodal LLM papers {date_range}"
+      - "video understanding AI research {date_range}"
+      - "efficient inference edge deployment {date_range}"
+      - "agent memory visual perception paper {date_range}"
+    description: "General web search fallback for broad coverage"
+
+  - name: openalex
+    type: api
+    enabled: true
+    description: "OpenAlex works API"
+
+  - name: website
+    type: web
+    enabled: false
+    sites: []
+    description: "Optional website discovery source. Add sites manually and use only as a discovery signal for original technical artifacts."
+
+  - name: wechat_mp
+    type: connector
+    enabled: false
+    channels: []
+    article_urls: []
+    description: "Optional WeChat public account connector. Requires a local fetch bridge such as Agent-Reach + mcporter + Exa MCP. Keep disabled unless your agent environment is configured."
+
+filter:
+  threshold: 7
+  max_papers_per_day: 10
+
+  my_work_context: |
+    Replace this with your real work context.
+    Example: I work on multimodal AI systems and want to track papers about video understanding, efficient inference, agent memory, and edge deployment.
+
+  categories:
+    - name: Multimodal LLMs
+      keywords: [VLM, multimodal, vision-language, LLaVA, InternVL, Qwen-VL]
+    - name: Video Understanding
+      keywords: [video understanding, video QA, temporal, action recognition, video summarization]
+    - name: AI Agents
+      keywords: [agent, tool use, planning, function calling, autonomous, memory]
+    - name: Efficiency
+      keywords: [distillation, quantization, pruning, efficient inference, model compression, caching]
+    - name: Safety and Evaluation
+      keywords: [safety, robustness, hallucination, evaluation, benchmark, red teaming]
+    - name: Edge Deployment
+      keywords: [edge deployment, on-device, mobile, TensorRT, ONNX, CoreML]
+
+archive:
+  notion:
+    enabled: false
+    database_id: ""
+  obsidian:
+    enabled: false
+    vault_path: ""
+    digest_directory: "Research/Papers/Daily"
+    filename_template: "{date}-paper-digest.md"
+  local_markdown:
+    enabled: true
+    directory: "digests"
+
+paths:
+  state_dir: "."
+  seen_papers: "seen_papers.json"
+  last_run: "last_run.json"
+  digests: "digests"
+  logs: "logs"
