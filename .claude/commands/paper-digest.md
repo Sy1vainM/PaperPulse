@@ -21,8 +21,9 @@ Read `docs/agent-protocol.md` first, then execute phases 0-5 below. User argumen
    - `seen_papers.json`
    - `sources-reference.md`
 2. If `config.yaml` is missing, stop and tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
-3. Determine today's date in the user's local timezone.
-4. Date range logic:
+3. If `last_run.json` or `seen_papers.json` is missing, initialize it from the matching `*.example.json` template.
+4. Determine today's date in the user's local timezone.
+5. Date range logic:
    - `last_run_date` is `null` -> collect today only.
    - `last_run_date` equals today and `last_run_status` is `success` -> report `Already ran today` and stop.
    - Otherwise -> collect from `last_run_date + 1 day` through today, inclusive.

@@ -182,6 +182,16 @@ Optional source name: `wechat_mp`
 
 Use only if the local environment has an approved WeChat fetch path. Do not assume credentials or MCP tools are available.
 
+When `connector_command` is configured, use it as the stable entry point:
+
+```bash
+python3 scripts/wechat_connector.py check
+python3 scripts/wechat_connector.py search 'site:mp.weixin.qq.com "CHANNEL" QUERY'
+python3 scripts/wechat_connector.py fetch 'https://mp.weixin.qq.com/s/ARTICLE_ID'
+```
+
+Do not call binaries under `.codex/worktrees/`; those paths are run-specific and disposable.
+
 Recommended connector stack:
 
 - Agent-Reach: content access helper.

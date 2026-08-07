@@ -25,6 +25,13 @@ Read these files before collecting:
 
 If `config.yaml` is missing, tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
 
+If a runtime state file is missing, initialize it from the versioned template:
+
+- `last_run.example.json` -> `last_run.json`
+- `seen_papers.example.json` -> `seen_papers.json`
+
+The runtime state files and generated digests are private local data and must remain ignored by Git.
+
 ## Date Range Rules
 
 1. Determine today's date in the user's local timezone.

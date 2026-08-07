@@ -12,23 +12,24 @@ WeChat public account articles are useful as discovery signals for fast-moving A
 - mcporter: local MCP bridge runner.
 - Exa MCP: web fetch/crawl backend used by mcporter.
 
-PaperPulse does not vendor or install these tools automatically. Users should configure them in their own environment.
+PaperPulse does not vendor these tools. Install them into the Git-ignored `.runtime/connectors/` directory so every local PaperPulse run uses one stable runtime.
 
 ## Setup Pattern
 
-Use an isolated local test directory or virtual environment. Do not install experimental connector dependencies into a shared project environment unless you intentionally want that.
+Use the repository-local `.runtime/connectors/` directory. It is private, stable across runs, and excluded from Git.
 
 Recommended flow:
 
-1. Create an isolated test directory.
-2. Create and activate a Python virtual environment.
-3. Install Agent-Reach from its upstream package or repository.
-4. Install `mcporter` in a local npm prefix or another isolated Node environment.
-5. Add the Exa MCP endpoint to mcporter.
-6. Run the Agent-Reach doctor or equivalent health check.
-7. Confirm WeChat support is available.
-8. Fetch one explicit WeChat article URL and confirm the article title/body are returned.
-9. Enable `wechat_mp` in `config.yaml`.
+1. Create `.runtime/connectors/agent-reach-venv` with Python 3.10 or newer.
+2. Install Agent-Reach into that virtual environment.
+3. Install `mcporter` into `.runtime/connectors/mcporter`.
+4. Store the project MCP configuration at `config/mcporter.json`.
+5. Add the Exa MCP endpoint to that configuration.
+6. Run `python3 scripts/wechat_connector.py check`.
+7. Fetch one explicit WeChat article URL and confirm the article title/body are returned.
+8. Enable `wechat_mp` in `config.yaml`.
+
+Never install connector dependencies in `.codex/worktrees/...`; a later automation run may use a different worktree and lose the binaries and MCP configuration.
 
 ## Example Config
 

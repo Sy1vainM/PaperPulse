@@ -1,8 +1,17 @@
 # Local config with private work context or Notion database IDs
 config.yaml
 
+# Private runtime state
+last_run.json
+seen_papers.json
+
+# Generated private archives
+digests/*.md
+!digests/.gitkeep
+
 # Runtime logs
-logs/*.log
+logs/*
+!logs/.gitkeep
 
 # OS files
 .DS_Store
@@ -14,3 +23,7 @@ __pycache__/
 # Environment files
 .env
 .env.*
+
+# Local connector runtimes and MCP configuration
+.runtime/
+config/mcporter.json

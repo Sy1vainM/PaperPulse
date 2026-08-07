@@ -16,6 +16,8 @@ One working approach is:
 
 Do not commit API keys, MCP credentials, cookies, local paths, or generated connector state to this repository.
 
+Keep connector dependencies in the stable, Git-ignored `.runtime/` directory. Do not install them in a Codex worktree because worktrees are disposable and do not share project-local dependencies.
+
 For installation notes and validation checks, read `docs/wechat-agent-reach-notes.md` only when enabling this connector.
 
 ## Config
@@ -30,6 +32,7 @@ sources:
     channels:
       - "Example Account"
     article_urls: []
+    connector_command: "python3 scripts/wechat_connector.py"
     description: "Optional WeChat public account connector."
 ```
 
@@ -43,14 +46,27 @@ sources:
     channels: []
     article_urls:
       - "https://mp.weixin.qq.com/s/..."
+    connector_command: "python3 scripts/wechat_connector.py"
 ```
+
+## Stable Connector Commands
+
+Use the tracked helper instead of calling a worktree-local binary:
+
+```bash
+python3 scripts/wechat_connector.py check
+python3 scripts/wechat_connector.py search 'site:mp.weixin.qq.com "Example Account" multimodal paper'
+python3 scripts/wechat_connector.py fetch 'https://mp.weixin.qq.com/s/...'
+```
+
+The helper resolves `.runtime/connectors/mcporter` and `config/mcporter.json` relative to the PaperPulse repository root.
 
 ## Agent Behavior
 
 When `wechat_mp` is enabled, the agent should:
 
 1. Read `docs/wechat-agent-reach-notes.md`.
-2. Verify that the local connector is available.
+2. Run `python3 scripts/wechat_connector.py check`.
 3. Fetch explicit `article_urls` first.
 4. If channel discovery is supported, fetch recent articles from configured `channels`.
 5. Extract original technical artifacts:

@@ -9,7 +9,8 @@ When asked to run the digest:
 1. Read `docs/agent-protocol.md`.
 2. Read `config.yaml`, `last_run.json`, `seen_papers.json`, and `sources-reference.md`.
 3. If `config.yaml` is missing, tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
-4. Follow the shared protocol exactly.
+4. If either state file is missing, initialize it from the matching `*.example.json` template.
+5. Follow the shared protocol exactly.
 
 ## Boundaries
 

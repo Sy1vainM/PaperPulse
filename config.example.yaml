@@ -58,6 +58,12 @@ sources:
     enabled: false
     channels: []
     article_urls: []
+    query_templates:
+      - 'site:mp.weixin.qq.com "{channel}" {date} 大模型 论文 arXiv GitHub'
+      - 'site:mp.weixin.qq.com "{channel}" {date} 多模态 视频 理解 Agent'
+    num_results_per_query: 5
+    max_characters: 12000
+    connector_command: "python3 scripts/wechat_connector.py"
     description: "Optional WeChat public account connector. Requires a local fetch bridge such as Agent-Reach + mcporter + Exa MCP. Keep disabled unless your agent environment is configured."
 
 filter:
