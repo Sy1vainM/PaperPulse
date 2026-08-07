@@ -9,7 +9,8 @@ PaperPulse gives your coding or research agent a stable workflow for daily paper
 - Collect new papers from enabled sources.
 - Deduplicate papers already seen in previous runs.
 - Score papers against your configured work context.
-- Generate a Chinese structured digest in Markdown.
+- Generate a Chinese structured Markdown source and an interactive HTML report.
+- Deep-read the highest-ranked papers and label the evidence depth honestly.
 - Optionally sync selected papers to Notion or Obsidian when configured.
 
 It is intentionally agent-first: the repository stores prompts, configuration, state, and output conventions, while Codex or Claude Code performs the actual collection and summarization.
@@ -26,6 +27,7 @@ paperpulse/
   sources-reference.md
   docs/
     agent-protocol.md
+    html-report-design.md
     public-release-checklist.md
     wechat-agent-reach-notes.md
     wechat-integration.md
@@ -39,6 +41,8 @@ paperpulse/
     .gitkeep
   logs/
     .gitkeep
+  scripts/
+    render_digest.py
 ```
 
 ## Quick Start
@@ -60,9 +64,10 @@ flowchart TD
     D -- "No" --> F["Collect enabled sources"]
     F --> G["Deduplicate and filter seen papers"]
     G --> H["Score against work context"]
-    H --> I["Write digests/YYYY-MM-DD.md"]
-    I --> J["Update last_run.json and seen_papers.json"]
-    J --> K["Optionally sync to Notion or Obsidian"]
+    H --> I["Deep-read configured Top N"]
+    I --> J["Write digests/YYYY-MM-DD.md"]
+    J --> K["Render interactive HTML"]
+    K --> L["Update state and optional archives"]
 ```
 
 ## Public-Safe Defaults
@@ -85,10 +90,11 @@ WeChat public account collection is supported as an optional connector. See `doc
 
 ## Output
 
-Each successful run writes:
+Each successful run writes a version-neutral Markdown source and, when enabled, an interactive HTML report:
 
 ```text
 digests/YYYY-MM-DD.md
+digests/YYYY-MM-DD.html
 ```
 
-The digest contains a summary table and a Chinese structured summary for each selected paper. Obsidian sync, when enabled, copies the same digest file into the configured vault directory.
+The HTML report adds executive signals, responsive navigation, search, theme switching, a static pulse identity, and expandable evidence cards. Cards can show an official paper figure plus verified PDF, project, and code actions when those resources are recorded in Markdown; missing media falls back cleanly to the text layout. The highest-ranked papers receive full-text review according to `report.deep_read_top_n`; every card states its actual reading depth. Obsidian sync, when enabled, continues to copy the Markdown source into the configured vault directory.

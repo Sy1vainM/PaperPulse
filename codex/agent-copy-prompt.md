@@ -14,10 +14,12 @@ Follow the shared protocol exactly:
 - Continue when a single source fails, but report failed sources at the end.
 - Deduplicate candidates and skip entries already in seen_papers.json.
 - Score papers against filter.my_work_context.
-- Write Chinese structured summaries to digests/YYYY-MM-DD.md.
+- Apply the tiered reading policy in report.deep_read_top_n and label each paper's actual reading depth.
+- Write the rich Chinese source report to digests/YYYY-MM-DD.md.
+- If report.html.enabled is true, render digests/YYYY-MM-DD.html with scripts/render_digest.py.
 - If Notion is enabled and available, archive selected papers to the configured database.
 - If Obsidian is enabled and configured, copy the generated digest into the configured vault path.
 - Update seen_papers.json and last_run.json only after at least one key phase succeeds.
 
-Final report: date range, successful/failed source counts, collected count, selected count, local digest path, Notion status, Obsidian status, and top selected papers with one-line reasons.
+Final report: date range, successful/failed source counts, collected count, selected count, local Markdown and HTML paths, HTML render status, Notion status, Obsidian status, and top selected papers with one-line reasons.
 ```

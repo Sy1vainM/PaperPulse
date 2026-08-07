@@ -88,6 +88,14 @@ filter:
     - name: Edge Deployment
       keywords: [edge deployment, on-device, mobile, TensorRT, ONNX, CoreML]
 
+report:
+  # Read the original full paper for the highest-ranked papers after initial scoring.
+  # Remaining selected papers still require the official abstract and primary project sources.
+  deep_read_top_n: 3
+  html:
+    enabled: true
+    open_top_n: 1
+
 archive:
   notion:
     enabled: false

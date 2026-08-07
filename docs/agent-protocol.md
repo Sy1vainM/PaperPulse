@@ -10,9 +10,11 @@ Run a daily paper digest workflow:
 2. Collect new research items from enabled sources.
 3. Deduplicate against previous runs.
 4. Score candidates against the configured work context.
-5. Write a Chinese Markdown digest.
-6. Optionally archive selected papers to Notion or Obsidian.
-7. Update state only after at least one key phase succeeds.
+5. Deep-read the configured number of highest-ranked papers.
+6. Write a rich Chinese Markdown source document.
+7. Render an interactive HTML report when enabled.
+8. Optionally archive selected papers to Notion or Obsidian.
+9. Update state only after at least one key phase succeeds.
 
 ## Required Files
 
@@ -30,7 +32,7 @@ If a runtime state file is missing, initialize it from the versioned template:
 - `last_run.example.json` -> `last_run.json`
 - `seen_papers.example.json` -> `seen_papers.json`
 
-The runtime state files and generated digests are private local data and must remain ignored by Git.
+The runtime state files and generated Markdown/HTML digests are private local data and must remain ignored by Git.
 
 ## Date Range Rules
 
@@ -115,9 +117,47 @@ Selection:
 3. Generate Chinese structured summaries for selected papers.
 4. If no paper passes the threshold, write a minimal digest noting that no papers passed and still update state if collection succeeded.
 
-## Digest Format
+## Reading Depth Rules
+
+Use a tiered reading policy so the report gains evidence without making every daily run unnecessarily expensive.
+
+1. Rank candidates using official abstracts and primary metadata first.
+2. Read the original full text for the top `report.deep_read_top_n` selected papers. Prefer official arXiv HTML or PDF and inspect at minimum:
+   - problem definition and claimed novelty;
+   - method or system architecture;
+   - experiment setup, datasets, baselines, and exact headline metrics;
+   - ablations or failure analysis when available;
+   - limitations, compute requirements, and release status.
+3. For the remaining selected papers, verify the official abstract, paper page, and primary project/code page when available.
+   - Record the official PDF separately from the abstract page.
+   - Record author-owned project and code URLs when they can be verified.
+   - Prefer one representative teaser or method figure from the official paper HTML or author-owned project page. Validate that the URL resolves to an image before recording it.
+   - Never use search-result thumbnails, screenshots from secondary articles, or an unrelated generated image as a paper figure.
+4. Label every paper honestly:
+   - `全文精读`: method, experiments, and limitations checked in the original paper;
+   - `摘要核验`: official abstract and primary metadata checked, without a full-paper claim.
+5. Assign an evidence level: `同行评审`, `预印本`, or `二手发现信号`. A secondary article may aid discovery but must not be graded as paper evidence.
+6. Never infer a full-text result from a blog, search snippet, or secondary article.
+7. Every exact metric or technical claim in `实验与证据` must point to the original paper, table, section, or official project source in the same card.
+8. Target roughly 600-1000 Chinese characters for each full-text review and 250-500 for each abstract-verified paper. Prefer concrete evidence over padding.
+9. If the full text is inaccessible, downgrade the label to `摘要核验` and state the access limitation.
+
+## Digest Content and Format
 
 Write `digests/YYYY-MM-DD.md`.
+
+The Markdown file is the canonical content source; the HTML file is the primary reading surface. Organize the report in two levels:
+
+1. Decision layer:
+   - `背景`: what changed in today's research landscape;
+   - `问题`: the production or research bottlenecks these papers address;
+   - `方案`: the shared technical direction across papers;
+   - `效果`: evidence summary plus Go/Watch/No-Go decisions;
+   - `今日决策`: the three most important conclusions;
+   - `行动建议`: concrete experiments, expected metrics, effort, and risk;
+   - `数据源状态`: successful and failed sources.
+   - `证据与生成说明`: reading-depth policy, unavailable evidence, and an AI-assisted research disclosure.
+2. Evidence layer: one expandable card per selected paper in the HTML report.
 
 Header:
 
@@ -143,21 +183,65 @@ Per-paper format:
 ```markdown
 ## [Paper Title](url)
 
-**Score**: X/10 | **Category**: cat1, cat2
+**Score**: X/10 | **Category**: cat1, cat2 | **Read Depth**: 全文精读 / 摘要核验
 **Authors**: first_author et al. | **Date**: YYYY-MM-DD | **Source**: source1, source2
+**Evidence Level**: 同行评审 / 预印本 / 二手发现信号
+**Links**: [PDF](url) | [代码](url) | [项目主页](url) | [主图](official-image-url)
 
 ### 一句话总结
 
-### 核心贡献
+### 为什么重要
 
-### 方法要点
+### 研究问题与现有瓶颈
 
-### 关键结果
+### 方法拆解
+
+### 实验与证据
+
+| Dataset / Task | Metric | Proposed | Baseline | Delta |
+|---|---:|---:|---:|---:|
+
+### 局限与风险
+
+### 复现条件
 
 ### 与我工作的关联
+
+### 下一步行动
+
+### 证据来源
 ```
 
+For `摘要核验` papers, keep unavailable sections concise and explicitly say which evidence was not verified. Do not invent missing experiments, compute, code status, or limitations.
+
+Resource links are optional and evidence-driven. Omit `代码`, `项目主页`, or `主图` when no author-owned or official source can be verified; missing artwork must never block an otherwise valid daily report.
+
+End the decision layer with a short disclosure that AI-assisted tools performed collection, ranking, and summarization, and that the reading-depth and evidence labels describe the actual verification completed in this run.
+
 All digest prose should be in Chinese unless the user asks otherwise.
+
+## HTML Rendering Rules
+
+When `report.html.enabled` is true, render the completed Markdown after its content has been validated:
+
+```bash
+python3 scripts/render_digest.py digests/YYYY-MM-DD.md --open-top N
+```
+
+Use `report.html.open_top_n` for `N`. The output is `digests/YYYY-MM-DD.html`.
+
+The renderer provides:
+
+- an executive header and daily metrics;
+- responsive desktop/mobile layout;
+- sticky navigation on wide screens;
+- searchable, expandable paper cards;
+- visible score, category, reading-depth, and one-line conclusion;
+- an optional official paper figure, compact authorship metadata, and separate paper/PDF/project/code/figure actions;
+- light/dark theme, reading progress, and print styles;
+- optional Mermaid rendering with a readable fallback.
+
+If HTML rendering fails, keep the Markdown source, report the HTML failure, and do not claim that the HTML artifact exists.
 
 ## Archive Rules
 
@@ -200,8 +284,9 @@ If `archive.obsidian.enabled` is true:
 When at least one key phase succeeds:
 
 1. Write or update `digests/YYYY-MM-DD.md`.
-2. Update `seen_papers.json` with selected papers and useful rejected candidates when available.
-3. Update `last_run.json`.
+2. Render `digests/YYYY-MM-DD.html` when enabled.
+3. Update `seen_papers.json` with selected papers and useful rejected candidates when available.
+4. Update `last_run.json`.
 
 When all major phases fail:
 
@@ -218,7 +303,8 @@ Report:
 - Failed source count.
 - Collected count.
 - Selected count.
-- Local digest path.
+- Local Markdown path.
+- Local HTML path and render status.
 - Notion archive status.
 - Obsidian archive status.
 - Top selected papers with one-line reasons.

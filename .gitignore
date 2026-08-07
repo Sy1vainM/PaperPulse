@@ -6,7 +6,7 @@ last_run.json
 seen_papers.json
 
 # Generated private archives
-digests/*.md
+digests/*
 !digests/.gitkeep
 
 # Runtime logs
