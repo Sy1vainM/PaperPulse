@@ -65,6 +65,29 @@ class RenderDigestTests(unittest.TestCase):
         self.assertIn('class="paper-resource-bar"', result)
         self.assertNotIn('<p><strong>Links</strong>', result)
 
+    def test_source_health_separates_disabled_and_partial_states(self) -> None:
+        section = RENDERER.Section(
+            title="数据源状态",
+            body=(
+                "| 数据源 | 状态 | 说明 |",
+                "|---|---|---|",
+                "| arXiv | 成功 | 10 篇 |",
+                "| Blog | 部分成功 | 一个 feed 失效 |",
+                "| Semantic Scholar | 已停用 | 避免限流 |",
+                "| WeChat | 未运行 | 未配置 |",
+            ),
+            anchor="sources",
+        )
+
+        health = RENDERER._source_health(section)
+
+        self.assertEqual(health.successful, 1)
+        self.assertEqual(health.partial, 1)
+        self.assertEqual(health.failed, 0)
+        self.assertEqual(health.disabled, 1)
+        self.assertEqual(health.skipped, 1)
+        self.assertEqual(health.unknown, 0)
+
     def test_render_latest_private_digest_when_available(self) -> None:
         digests = sorted((PROJECT_ROOT / "digests").glob("????-??-??.md"))
         if not digests:

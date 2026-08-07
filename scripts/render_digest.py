@@ -90,6 +90,23 @@ class PaperMeta:
     image_url: Optional[str]
 
 
+@dataclass(frozen=True)
+class SourceHealth:
+    """Store normalized source execution states from one digest snapshot."""
+
+    successful: int
+    partial: int
+    failed: int
+    disabled: int
+    skipped: int
+    unknown: int
+
+    @property
+    def attempted(self) -> int:
+        """Return sources that actually attempted collection."""
+        return self.successful + self.partial + self.failed
+
+
 def _safe_url(value: str) -> Optional[str]:
     """Allow only URLs suitable for links in a local report."""
     parsed = urlparse(value.strip())
@@ -462,24 +479,45 @@ def _first_readable_line(lines: Sequence[str]) -> str:
     return "暂无摘要"
 
 
-def _source_health(section: Optional[Section]) -> tuple[int, int]:
-    """Count successful and failed source rows in a status table."""
+def _source_status(value: str) -> str:
+    """Normalize one source state without confusing disabled with failed."""
+    normalized = _strip_markdown(value).strip().lower()
+    if any(token in normalized for token in ("停用", "disabled")):
+        return "disabled"
+    if any(token in normalized for token in ("未运行", "未记录", "跳过", "not run", "skipped")):
+        return "skipped"
+    if any(token in normalized for token in ("部分", "partial")):
+        return "partial"
+    if any(token in normalized for token in ("失败", "failed", "error")):
+        return "failed"
+    if any(token in normalized for token in ("成功", "正常", "success", "healthy")):
+        return "successful"
+    return "unknown"
+
+
+def _source_health(section: Optional[Section]) -> SourceHealth:
+    """Count normalized source states from a digest status table."""
+    counts = {
+        "successful": 0,
+        "partial": 0,
+        "failed": 0,
+        "disabled": 0,
+        "skipped": 0,
+        "unknown": 0,
+    }
     if section is None:
-        return 0, 0
-    successful = 0
-    failed = 0
+        return SourceHealth(**counts)
     for line in section.body:
-        if not line.strip().startswith("|"):
+        if not line.strip().startswith("|") or TABLE_DIVIDER_PATTERN.match(line):
             continue
         cells = _split_table_row(line)
         if len(cells) < 2:
             continue
-        status = _strip_markdown(cells[1])
-        if "成功" in status or status.lower() == "success":
-            successful += 1
-        elif "失败" in status or status.lower() == "failed":
-            failed += 1
-    return successful, failed
+        state = _source_status(cells[1])
+        if state == "unknown" and _strip_markdown(cells[0]).strip().lower() in {"数据源", "source"}:
+            continue
+        counts[state] += 1
+    return SourceHealth(**counts)
 
 
 def _render_sidebar_brief(sections: Sequence[Section]) -> str:
@@ -504,14 +542,27 @@ def _render_sidebar_brief(sections: Sequence[Section]) -> str:
         ),
         None,
     )
-    successful, failed = _source_health(source_section)
+    health = _source_health(source_section)
     source_html = ""
     if source_section is not None:
+        secondary_states = "".join(
+            item
+            for count, item in (
+                (health.disabled, f'<span class="status-pill disabled"><strong>{health.disabled}</strong> 停用</span>'),
+                (health.skipped, f'<span class="status-pill skipped"><strong>{health.skipped}</strong> 未运行</span>'),
+                (health.unknown, f'<span class="status-pill skipped"><strong>{health.unknown}</strong> 未知</span>'),
+            )
+            if count > 0
+        )
         source_html = (
             f'<a class="source-health" href="#report-appendix" '
             f'data-target="{html.escape(source_section.anchor, quote=True)}">'
-            '<span class="health-label">数据源</span>'
-            f'<span><strong>{successful}</strong> 成功</span><span><strong>{failed}</strong> 失败</span></a>'
+            f'<span class="health-head"><span class="health-label">数据源</span><small>{health.attempted} 个已执行</small></span>'
+            '<span class="health-pills">'
+            f'<span class="status-pill success"><strong>{health.successful}</strong> 正常</span>'
+            f'<span class="status-pill partial"><strong>{health.partial}</strong> 部分</span>'
+            f'<span class="status-pill failed"><strong>{health.failed}</strong> 失败</span>'
+            f'{secondary_states}</span></a>'
         )
     return "".join(previews) + source_html
 
@@ -650,6 +701,12 @@ def _report_css() -> str:
   --brand-glow: rgba(0, 113, 227, 0.16);
   --deep: #5856d6;
   --deep-soft: rgba(88, 86, 214, 0.11);
+  --success: #248a3d;
+  --success-soft: rgba(36, 138, 61, 0.11);
+  --warning: #a45100;
+  --warning-soft: rgba(164, 81, 0, 0.11);
+  --danger: #d70015;
+  --danger-soft: rgba(215, 0, 21, 0.10);
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.03), 0 12px 38px rgba(0, 0, 0, 0.055);
   --shadow-open: 0 2px 4px rgba(0, 0, 0, 0.03), 0 22px 60px rgba(0, 0, 0, 0.09);
   --radius-xl: 32px;
@@ -685,6 +742,12 @@ def _report_css() -> str:
   --brand-glow: rgba(41, 151, 255, 0.18);
   --deep: #bf5af2;
   --deep-soft: rgba(191, 90, 242, 0.17);
+  --success: #30d158;
+  --success-soft: rgba(48, 209, 88, 0.16);
+  --warning: #ff9f0a;
+  --warning-soft: rgba(255, 159, 10, 0.16);
+  --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.16);
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.20), 0 16px 42px rgba(0, 0, 0, 0.26);
   --shadow-open: 0 2px 5px rgba(0, 0, 0, 0.25), 0 26px 70px rgba(0, 0, 0, 0.42);
 }
@@ -718,6 +781,12 @@ def _report_css() -> str:
     --brand-glow: rgba(41, 151, 255, 0.18);
     --deep: #bf5af2;
     --deep-soft: rgba(191, 90, 242, 0.17);
+    --success: #30d158;
+    --success-soft: rgba(48, 209, 88, 0.16);
+    --warning: #ff9f0a;
+    --warning-soft: rgba(255, 159, 10, 0.16);
+    --danger: #ff453a;
+    --danger-soft: rgba(255, 69, 58, 0.16);
     --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.20), 0 16px 42px rgba(0, 0, 0, 0.26);
     --shadow-open: 0 2px 5px rgba(0, 0, 0, 0.25), 0 26px 70px rgba(0, 0, 0, 0.42);
   }
@@ -939,9 +1008,16 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
-.source-health { display: grid; grid-template-columns: 1fr auto auto; align-items: baseline; gap: 8px; margin-top: 3px; }
-.source-health > span:not(.health-label) { color: var(--muted); font-size: 10px; }
-.source-health strong { color: var(--ink); font-size: 13px; }
+.source-health { display: grid; gap: 8px; margin-top: 3px; }
+.health-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.health-head small { color: var(--tertiary); font-size: 9px; }
+.health-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+.status-pill { display: inline-flex; align-items: baseline; gap: 3px; padding: 4px 7px; border-radius: 999px; font-size: 9px; font-weight: 650; }
+.status-pill strong { font-size: 11px; }
+.status-pill.success { background: var(--success-soft); color: var(--success); }
+.status-pill.partial { background: var(--warning-soft); color: var(--warning); }
+.status-pill.failed { background: var(--danger-soft); color: var(--danger); }
+.status-pill.disabled, .status-pill.skipped { background: var(--surface-muted); color: var(--muted); }
 .toc { display: grid; gap: 3px; }
 .toc a { display: block; padding: 7px 8px; border-radius: 9px; color: var(--muted); text-decoration: none; font-size: 12px; line-height: 1.38; }
 .toc a:hover { background: var(--brand-soft); color: var(--brand); }

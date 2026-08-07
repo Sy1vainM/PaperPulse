@@ -36,14 +36,14 @@ class WeChatConnectorTests(unittest.TestCase):
         _validate_runtime: Mock,
         mcporter_call: Mock,
     ) -> None:
-        args = argparse.Namespace(query="新智元 多模态", num_results=3, timeout_ms=60000)
+        args = argparse.Namespace(query="示例公众号 多模态", num_results=3, timeout_ms=60000)
 
         result = CONNECTOR.search_wechat(args)
 
         self.assertEqual(result, 0)
         mcporter_call.assert_called_once_with(
             "exa.web_search_exa",
-            {"query": "site:mp.weixin.qq.com 新智元 多模态", "numResults": 3},
+            {"query": "site:mp.weixin.qq.com 示例公众号 多模态", "numResults": 3},
             60000,
         )
 

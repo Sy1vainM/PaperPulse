@@ -20,6 +20,7 @@ It is intentionally agent-first: the repository stores prompts, configuration, s
 ```text
 paperpulse/
   AGENTS.md
+  LICENSE
   README.md
   config.example.yaml
   last_run.example.json
@@ -98,3 +99,15 @@ digests/YYYY-MM-DD.html
 ```
 
 The HTML report adds executive signals, responsive navigation, search, theme switching, a static pulse identity, and expandable evidence cards. Cards can show an official paper figure plus verified PDF, project, and code actions when those resources are recorded in Markdown; missing media falls back cleanly to the text layout. The highest-ranked papers receive full-text review according to `report.deep_read_top_n`; every card states its actual reading depth. Obsidian sync, when enabled, continues to copy the Markdown source into the configured vault directory.
+
+Before publishing changes, run the privacy gate:
+
+```bash
+python3 scripts/check_public_release.py
+```
+
+It scans the exact staged index and all reachable Git history. The gate blocks tracked private configuration, runtime state, generated digests, logs, personal home paths, populated archive fields, and token-like credentials without printing their values.
+
+## License
+
+PaperPulse is released under the [MIT License](LICENSE).

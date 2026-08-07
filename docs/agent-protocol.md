@@ -155,7 +155,7 @@ The Markdown file is the canonical content source; the HTML file is the primary 
    - `效果`: evidence summary plus Go/Watch/No-Go decisions;
    - `今日决策`: the three most important conclusions;
    - `行动建议`: concrete experiments, expected metrics, effort, and risk;
-   - `数据源状态`: successful and failed sources.
+   - `数据源状态`: one normalized row for every configured source, including disabled and skipped sources.
    - `证据与生成说明`: reading-depth policy, unavailable evidence, and an AI-assisted research disclosure.
 2. Evidence layer: one expandable card per selected paper in the HTML report.
 
@@ -168,6 +168,25 @@ Header:
 > Collected: N unique candidates from X successful sources | Selected: M papers (threshold: T)
 > Generated: YYYY-MM-DD HH:mm TZ
 ```
+
+Data source status table:
+
+```markdown
+## 数据源状态
+
+| 数据源 | 状态 | 当日结果 |
+|---|---|---|
+| arXiv | 成功 | 120 篇去重条目 |
+| Optional Source | 已停用 | 当前配置未启用 |
+```
+
+Use exactly one of these states: `成功`, `部分成功`, `失败`, `已停用`, or `未运行`.
+
+- Include every entry from `sources` in `config.yaml`, even when it is disabled or skipped.
+- Count only `失败` as a failure. `已停用` and `未运行` are neutral states and must never inflate the failure count.
+- Use `部分成功` when at least one sub-feed or query succeeds and another fails.
+- Put HTTP codes, redirect details, missing dependencies, and retry guidance in `当日结果`, not in the state value.
+- Keep the table as a run-time snapshot. If a source is repaired later, either regenerate the snapshot or explicitly state the recheck time and preserve the original failure in the note.
 
 Summary table:
 
@@ -242,6 +261,17 @@ The renderer provides:
 - optional Mermaid rendering with a readable fallback.
 
 If HTML rendering fails, keep the Markdown source, report the HTML failure, and do not claim that the HTML artifact exists.
+
+## Privacy and Public Release Rules
+
+The repository is public code; runtime research data is private by default.
+
+1. Never copy values from `config.yaml`, runtime state, generated digests, logs, local MCP configuration, or environment files into tracked source, tests, prompts, or documentation.
+2. Keep real work context, source channels, archive IDs, local paths, collected-paper history, and generated reports only in Git-ignored files.
+3. Use `config.example.yaml`, `last_run.example.json`, and `seen_papers.example.json` as sanitized public templates.
+4. Tests must use synthetic placeholder values and must not embed a real home-directory path, database ID, article history, credential, or private endpoint.
+5. Before any public push, run `python3 scripts/check_public_release.py`; a non-zero exit blocks the release.
+6. Error messages and logs may name a field or file but must not print credential values.
 
 ## Archive Rules
 
