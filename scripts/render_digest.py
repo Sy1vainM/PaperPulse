@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import re
 import sys
@@ -12,11 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 
 LOGGER = logging.getLogger("paperpulse.renderer")
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+FIGURE_PATTERN = re.compile(r"!\[([^]\n]*)]\((\S+)\)")
 PAPER_LINK_PATTERN = re.compile(r"^\[([^]]+)]\(([^)]+)\)$")
 INLINE_PATTERN = re.compile(r"(`[^`]+`|\*\*[^*]+\*\*|\[[^]]+]\([^)]+\))")
 TABLE_DIVIDER_PATTERN = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -39,6 +41,7 @@ PRESENTATION_META_PATTERN = re.compile(
     re.I,
 )
 PRIMARY_SECTION_NAMES = {
+    "今日判断与行动",
     "今日结论",
     "今日决策",
     "行动建议",
@@ -53,7 +56,7 @@ REDUNDANT_SECTION_NAMES = {
     "论文总览",
     "论文列表",
 }
-SIDEBAR_SECTION_NAMES = ("背景", "问题", "效果")
+
 
 
 @dataclass(frozen=True)
@@ -116,11 +119,15 @@ def _safe_url(value: str) -> Optional[str]:
 
 
 def _safe_image_url(value: str) -> Optional[str]:
-    """Allow only remote HTTP(S) image resources."""
-    safe_url = _safe_url(value)
-    if safe_url is None or urlparse(safe_url).scheme not in {"http", "https"}:
+    """Accept HTTP(S) or document-relative image paths."""
+    value = value.strip()
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return value
+    if (parsed.scheme or parsed.netloc or not parsed.path or value.startswith("/")
+            or "\\" in value or any(ord(c) < 32 for c in value)):
         return None
-    return safe_url
+    return value
 
 
 def _strip_markdown(value: str) -> str:
@@ -204,6 +211,8 @@ def _is_special_start(lines: Sequence[str], index: int) -> bool:
     line = lines[index]
     if not line.strip():
         return True
+    if FIGURE_PATTERN.fullmatch(line.strip()):
+        return True
     if line.startswith("```") or HEADING_PATTERN.match(line):
         return True
     if line.startswith(">") or re.match(r"^\s*[-*+]\s+", line):
@@ -237,6 +246,22 @@ def _render_blocks(lines: Sequence[str]) -> str:
             else:
                 language_class = f" language-{html.escape(language, quote=True)}" if language else ""
                 output.append(f'<pre class="code-block"><code class="{language_class.strip()}">{code}</code></pre>')
+            continue
+
+        figure = FIGURE_PATTERN.fullmatch(line.strip())
+        if figure:
+            caption = html.escape(figure[1] or "论文配图")
+            image_url = _safe_image_url(figure[2])
+            if image_url:
+                url = html.escape(image_url, quote=True)
+                output.append(
+                    f'<figure class="evidence-figure"><img src="{url}" alt="{caption}" loading="lazy">'
+                    f'<figcaption>{caption} · <a href="{url}" target="_blank" rel="noopener noreferrer">'
+                    '查看原图</a></figcaption></figure>'
+                )
+            else:
+                output.append(f"<p>{caption}</p>")
+            index += 1
             continue
 
         heading_match = HEADING_PATTERN.match(line)
@@ -417,7 +442,7 @@ def _paper_meta(section: Section) -> PaperMeta:
     if category_match is not None:
         categories = tuple(
             item.strip()
-            for item in re.split(r"[,，/]", _strip_markdown(category_match.group(1)))
+            for item in re.split(r"[,，、]|\s+/\s+", _strip_markdown(category_match.group(1)))
             if item.strip()
         )
     depth_match = DEPTH_PATTERN.search(body_text)
@@ -436,7 +461,7 @@ def _paper_meta(section: Section) -> PaperMeta:
         )
     evidence_match = EVIDENCE_PATTERN.search(body_text)
     evidence_level = _strip_markdown(evidence_match.group(1)) if evidence_match is not None else ""
-    summary = _section_text(section.body, ("一句话总结", "TL;DR", "核心结论"))
+    summary = _section_text(section.body, ("一句话总结", "TL;DR", "核心结论", "核心突破与做法"))
     if not summary:
         summary = next((line for line in section.body if line.strip() and not line.startswith("**")), "点击展开详情")
     resources = _paper_resources(section)
@@ -520,53 +545,6 @@ def _source_health(section: Optional[Section]) -> SourceHealth:
     return SourceHealth(**counts)
 
 
-def _render_sidebar_brief(sections: Sequence[Section]) -> str:
-    """Render short context previews without moving long prose into the sidebar."""
-    by_name = {_section_name(section): section for section in sections}
-    previews: list[str] = []
-    for name in SIDEBAR_SECTION_NAMES:
-        section = by_name.get(name.lower())
-        if section is None:
-            continue
-        previews.append(
-            f'<a class="brief-item" href="#report-appendix" '
-            f'data-target="{html.escape(section.anchor, quote=True)}">'
-            f'<span>{html.escape(name)}</span><p>{html.escape(_first_readable_line(section.body))}</p></a>'
-        )
-
-    source_section = next(
-        (
-            section
-            for section in sections
-            if _section_name(section) in {"数据源状态", "source status", "sources"}
-        ),
-        None,
-    )
-    health = _source_health(source_section)
-    source_html = ""
-    if source_section is not None:
-        secondary_states = "".join(
-            item
-            for count, item in (
-                (health.disabled, f'<span class="status-pill disabled"><strong>{health.disabled}</strong> 停用</span>'),
-                (health.skipped, f'<span class="status-pill skipped"><strong>{health.skipped}</strong> 未运行</span>'),
-                (health.unknown, f'<span class="status-pill skipped"><strong>{health.unknown}</strong> 未知</span>'),
-            )
-            if count > 0
-        )
-        source_html = (
-            f'<a class="source-health" href="#report-appendix" '
-            f'data-target="{html.escape(source_section.anchor, quote=True)}">'
-            f'<span class="health-head"><span class="health-label">数据源</span><small>{health.attempted} 个已执行</small></span>'
-            '<span class="health-pills">'
-            f'<span class="status-pill success"><strong>{health.successful}</strong> 正常</span>'
-            f'<span class="status-pill partial"><strong>{health.partial}</strong> 部分</span>'
-            f'<span class="status-pill failed"><strong>{health.failed}</strong> 失败</span>'
-            f'{secondary_states}</span></a>'
-        )
-    return "".join(previews) + source_html
-
-
 def _prepare_paper_body(lines: Sequence[str]) -> tuple[str, ...]:
     """Remove metadata and a TL;DR already promoted into the card chrome."""
     output: list[str] = []
@@ -585,7 +563,7 @@ def _prepare_paper_body(lines: Sequence[str]) -> tuple[str, ...]:
     return tuple(output)
 
 
-def _extract_count(markdown: str, patterns: Sequence[str], fallback: int) -> int:
+def _extract_count(markdown: str, patterns: Sequence[str], fallback: Optional[int]) -> Optional[int]:
     """Extract a report count from Chinese or English digest prose."""
     for pattern in patterns:
         match = re.search(pattern, markdown, re.I)
@@ -599,21 +577,16 @@ def _render_paper_card(section: Section, index: int, open_top: int) -> str:
     if section.paper_title is None or section.paper_url is None:
         raise ValueError("Paper card requires a title and URL")
     meta = _paper_meta(section)
-    score_value = f"{meta.score:.1f}" if meta.score is not None else "—"
+    score_value = format(meta.score, ".2f").rstrip("0").rstrip(".") if meta.score is not None else "—"
     category_badges = "".join(f'<span class="tag">{html.escape(item)}</span>' for item in meta.categories)
     depth_class = "deep" if "全文" in meta.read_depth or "精读" in meta.read_depth else "standard"
     opened = " open" if index <= open_top else ""
     body = _render_blocks(_prepare_paper_body(section.body))
-    card_class = "paper-card has-visual" if meta.image_url is not None else "paper-card"
-    visual_html = ""
-    if meta.image_url is not None:
-        visual_html = (
-            '<span class="paper-visual">'
-            f'<img src="{html.escape(meta.image_url, quote=True)}" '
-            f'alt="{html.escape(section.paper_title + " 的论文主图", quote=True)}" '
-            'loading="lazy" decoding="async" referrerpolicy="no-referrer">'
-            '<span class="visual-label">论文主图</span></span>'
-        )
+    if meta.image_url and not any(
+        (m := FIGURE_PATTERN.fullmatch(line.strip())) and m[2] == meta.image_url for line in section.body
+    ):
+        caption = section.paper_title + " · 论文主图"
+        body = _render_blocks([f"![{caption}]({meta.image_url})"]) + body
 
     byline_items: list[str] = []
     if meta.authors:
@@ -649,7 +622,7 @@ def _render_paper_card(section: Section, index: int, open_top: int) -> str:
         f'<div class="paper-actions">{"".join(resource_links)}</div></div>'
     )
     return f"""
-<details class="{card_class}" id="{html.escape(section.anchor, quote=True)}"
+<details class="paper-card" id="{html.escape(section.anchor, quote=True)}"
          data-score="{score_value}" data-depth="{html.escape(depth_class, quote=True)}"
          data-search="{html.escape((section.paper_title + ' ' + ' '.join(meta.categories)).lower(), quote=True)}"{opened}>
   <summary>
@@ -659,7 +632,6 @@ def _render_paper_card(section: Section, index: int, open_top: int) -> str:
       <span class="paper-title">{html.escape(section.paper_title)}</span>
       <span class="paper-tldr">{html.escape(meta.summary)}</span>
     </span>
-    {visual_html}
     <span class="paper-score"><strong>{score_value}</strong><small>/10</small></span>
     <span class="expand-icon" aria-hidden="true">⌄</span>
   </summary>
@@ -671,890 +643,558 @@ def _render_paper_card(section: Section, index: int, open_top: int) -> str:
 
 
 def _report_css() -> str:
-    """Return the self-contained responsive visual system."""
-    return r"""
+    return """
 :root {
-  color-scheme: light;
-  --bg: #f5f5f7;
-  --surface: rgba(255, 255, 255, 0.74);
-  --surface-solid: #ffffff;
-  --surface-muted: rgba(118, 118, 128, 0.08);
-  --glass-surface: rgba(255, 255, 255, 0.50);
-  --glass-surface-strong: rgba(255, 255, 255, 0.68);
-  --glass-lowlight: rgba(255, 255, 255, 0.28);
-  --glass-border: rgba(255, 255, 255, 0.72);
-  --glass-highlight: rgba(255, 255, 255, 0.92);
-  --glass-shadow: 0 1px 1px rgba(255, 255, 255, 0.78) inset, 0 18px 50px rgba(31, 38, 53, 0.13);
-  --ambient-blue: rgba(0, 113, 227, 0.22);
-  --ambient-purple: rgba(175, 82, 222, 0.14);
-  --ambient-cyan: rgba(100, 210, 255, 0.18);
-  --ambient-sheen: rgba(255, 255, 255, 0.34);
-  --ink: #1d1d1f;
-  --muted: #6e6e73;
-  --tertiary: #86868b;
-  --line: rgba(0, 0, 0, 0.08);
-  --line-strong: rgba(0, 0, 0, 0.13);
-  --brand: #0071e3;
-  --brand-hover: #0077ed;
-  --brand-soft: rgba(0, 113, 227, 0.10);
-  --brand-line: rgba(0, 113, 227, 0.22);
-  --brand-glow: rgba(0, 113, 227, 0.16);
-  --deep: #5856d6;
-  --deep-soft: rgba(88, 86, 214, 0.11);
-  --success: #248a3d;
-  --success-soft: rgba(36, 138, 61, 0.11);
-  --warning: #a45100;
-  --warning-soft: rgba(164, 81, 0, 0.11);
-  --danger: #d70015;
-  --danger-soft: rgba(215, 0, 21, 0.10);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.03), 0 12px 38px rgba(0, 0, 0, 0.055);
-  --shadow-open: 0 2px 4px rgba(0, 0, 0, 0.03), 0 22px 60px rgba(0, 0, 0, 0.09);
-  --radius-xl: 32px;
-  --radius-lg: 24px;
-  --radius-md: 18px;
+  color-scheme:light;
+  --bg:#f3f7fa;
+  --ink:#152e42;
+  --muted:#485f70;
+  --paper:#fff;
+  --rule:#cbd9e2;
+  --blue:#185680;
+  --pale:#e8f1f7;
+  --accent:#a35b20
 }
-
-[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #000000;
-  --surface: rgba(28, 28, 30, 0.78);
-  --surface-solid: #1c1c1e;
-  --surface-muted: rgba(118, 118, 128, 0.18);
-  --glass-surface: rgba(28, 28, 30, 0.48);
-  --glass-surface-strong: rgba(44, 44, 46, 0.60);
-  --glass-lowlight: rgba(255, 255, 255, 0.08);
-  --glass-border: rgba(255, 255, 255, 0.20);
-  --glass-highlight: rgba(255, 255, 255, 0.28);
-  --glass-shadow: 0 1px 1px rgba(255, 255, 255, 0.12) inset, 0 22px 58px rgba(0, 0, 0, 0.42);
-  --ambient-blue: rgba(41, 151, 255, 0.28);
-  --ambient-purple: rgba(191, 90, 242, 0.20);
-  --ambient-cyan: rgba(100, 210, 255, 0.16);
-  --ambient-sheen: rgba(255, 255, 255, 0.045);
-  --ink: #f5f5f7;
-  --muted: #a1a1a6;
-  --tertiary: #8e8e93;
-  --line: rgba(255, 255, 255, 0.11);
-  --line-strong: rgba(255, 255, 255, 0.18);
-  --brand: #2997ff;
-  --brand-hover: #40a9ff;
-  --brand-soft: rgba(41, 151, 255, 0.16);
-  --brand-line: rgba(41, 151, 255, 0.30);
-  --brand-glow: rgba(41, 151, 255, 0.18);
-  --deep: #bf5af2;
-  --deep-soft: rgba(191, 90, 242, 0.17);
-  --success: #30d158;
-  --success-soft: rgba(48, 209, 88, 0.16);
-  --warning: #ff9f0a;
-  --warning-soft: rgba(255, 159, 10, 0.16);
-  --danger: #ff453a;
-  --danger-soft: rgba(255, 69, 58, 0.16);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.20), 0 16px 42px rgba(0, 0, 0, 0.26);
-  --shadow-open: 0 2px 5px rgba(0, 0, 0, 0.25), 0 26px 70px rgba(0, 0, 0, 0.42);
+:root[data-theme=dark] {
+  color-scheme:dark;
+  --bg:#101d27;
+  --ink:#edf5fa;
+  --muted:#acc2d0;
+  --paper:#192b38;
+  --rule:#3b5362;
+  --blue:#98d2f5;
+  --pale:#233c4e;
+  --accent:#edb176
 }
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg: #000000;
-    --surface: rgba(28, 28, 30, 0.78);
-    --surface-solid: #1c1c1e;
-    --surface-muted: rgba(118, 118, 128, 0.18);
-    --glass-surface: rgba(28, 28, 30, 0.48);
-    --glass-surface-strong: rgba(44, 44, 46, 0.60);
-    --glass-lowlight: rgba(255, 255, 255, 0.08);
-    --glass-border: rgba(255, 255, 255, 0.20);
-    --glass-highlight: rgba(255, 255, 255, 0.28);
-    --glass-shadow: 0 1px 1px rgba(255, 255, 255, 0.12) inset, 0 22px 58px rgba(0, 0, 0, 0.42);
-    --ambient-blue: rgba(41, 151, 255, 0.28);
-    --ambient-purple: rgba(191, 90, 242, 0.20);
-    --ambient-cyan: rgba(100, 210, 255, 0.16);
-    --ambient-sheen: rgba(255, 255, 255, 0.045);
-    --ink: #f5f5f7;
-    --muted: #a1a1a6;
-    --tertiary: #8e8e93;
-    --line: rgba(255, 255, 255, 0.11);
-    --line-strong: rgba(255, 255, 255, 0.18);
-    --brand: #2997ff;
-    --brand-hover: #40a9ff;
-    --brand-soft: rgba(41, 151, 255, 0.16);
-    --brand-line: rgba(41, 151, 255, 0.30);
-    --brand-glow: rgba(41, 151, 255, 0.18);
-    --deep: #bf5af2;
-    --deep-soft: rgba(191, 90, 242, 0.17);
-    --success: #30d158;
-    --success-soft: rgba(48, 209, 88, 0.16);
-    --warning: #ff9f0a;
-    --warning-soft: rgba(255, 159, 10, 0.16);
-    --danger: #ff453a;
-    --danger-soft: rgba(255, 69, 58, 0.16);
-    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.20), 0 16px 42px rgba(0, 0, 0, 0.26);
-    --shadow-open: 0 2px 5px rgba(0, 0, 0, 0.25), 0 26px 70px rgba(0, 0, 0, 0.42);
-  }
+* {
+  box-sizing:border-box
 }
-
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
 body {
-  margin: 0;
-  background-color: var(--bg);
-  background-image:
-    radial-gradient(circle at 8% 18%, var(--ambient-cyan), transparent 27rem),
-    radial-gradient(circle at 82% -8%, var(--ambient-blue), transparent 34rem),
-    radial-gradient(circle at 96% 46%, var(--ambient-purple), transparent 29rem),
-    linear-gradient(180deg, var(--ambient-sheen), transparent 38rem);
-  background-attachment: fixed;
-  background-repeat: no-repeat;
-  color: var(--ink);
-  font: 16px/1.68 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-  min-height: 100vh;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font:16px/1.55 "Inter",-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif
 }
-
-a { color: var(--brand); text-decoration-thickness: 1px; text-underline-offset: 3px; }
-a:hover { color: var(--brand-hover); }
-button, input, summary { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible {
-  outline: 3px solid var(--brand-soft);
-  outline-offset: 2px;
+main,.topbar,footer {
+  width:min(1320px,94%);
+  margin:auto
 }
-.reading-progress {
-  position: fixed;
-  z-index: 200;
-  inset: 0 auto auto 0;
-  width: 0;
-  height: 3px;
-  border-radius: 0 99px 99px 0;
-  background: var(--brand);
+h1,h2,h3,p {
+  margin-block:0 .6em
 }
-
-.shell { width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 16px 0 80px; }
+h1 {
+  font-size:clamp(28px,3vw,42px);
+  letter-spacing:-.045em;
+  line-height:1.1
+}
+h2 {
+  font-size:22px;
+  letter-spacing:-.03em
+}
+.topbar,.mast,.filters,.paper-tools,.paper-actions,.byline,.top-actions,.paper-badges {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap
+}
 .topbar {
-  position: sticky;
-  z-index: 90;
-  top: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 54px;
-  margin-bottom: 24px;
-  padding: 8px 10px 8px 14px;
-  border: 1px solid var(--glass-border);
-  border-radius: 18px;
-  background: linear-gradient(135deg, var(--glass-surface-strong), var(--glass-surface));
-  box-shadow: var(--glass-shadow);
-  -webkit-backdrop-filter: saturate(165%) blur(30px);
-  backdrop-filter: saturate(165%) blur(30px);
-  isolation: isolate;
-  overflow: hidden;
+  justify-content:space-between;
+  padding:15px 0;
+  border-bottom:1px solid var(--rule)
 }
-.topbar::before, .sidebar::before, .hero::before {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  border-radius: inherit;
-  background:
-    radial-gradient(circle at 14% 0%, var(--glass-highlight), transparent 31%),
-    linear-gradient(115deg, rgba(255, 255, 255, 0.18), transparent 36%, transparent 72%, var(--brand-soft));
-  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 -1px 0 rgba(255, 255, 255, 0.10);
-  content: "";
-  pointer-events: none;
+.brand {
+  font-size:21px;
+  font-weight:750;
+  letter-spacing:-.05em;
+  text-decoration:none
 }
-.topbar > *, .sidebar > *, .hero > * { position: relative; z-index: 1; }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -0.018em; }
-.brand-mark {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 32% 22%, rgba(255, 255, 255, 0.42), transparent 31%),
-    linear-gradient(145deg, #0a84ff, #0066cc);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34), 0 4px 12px rgba(0, 113, 227, 0.30);
+.brand b {
+  color:var(--blue)
 }
-.brand-mark svg { width: 26px; height: 26px; overflow: visible; }
-.pulse-ring {
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.24);
-  stroke-width: 1;
+a {
+  color:var(--blue);
+  text-underline-offset:3px
 }
-.pulse-wave {
-  fill: none;
-  stroke: #ffffff;
-  stroke-width: 2.05;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 1px 2px rgba(0, 58, 122, 0.32));
+button,input {
+  font:inherit;
+  color:inherit
 }
-.top-actions { display: flex; gap: 8px; }
-.icon-button, .control-button {
-  min-height: 36px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: var(--surface-muted);
-  color: var(--ink);
-  padding: 8px 13px;
-  cursor: pointer;
-  font: 600 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  transition: background-color .18s ease, color .18s ease, transform .18s ease;
+button,.chip,input {
+  border:1px solid var(--rule);
+  background:var(--paper);
+  border-radius:7px;
+  padding:5px 10px;
+  font-size:13px
 }
-.icon-button:hover, .control-button:hover { background: var(--brand-soft); color: var(--brand); }
-.icon-button:active, .control-button:active { transform: scale(0.97); }
-
-.hero {
-  position: relative;
-  overflow: hidden;
-  padding: clamp(34px, 4.8vw, 58px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  background: linear-gradient(145deg, var(--glass-surface-strong), var(--glass-surface));
-  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
-  -webkit-backdrop-filter: saturate(155%) blur(28px);
-  backdrop-filter: saturate(155%) blur(28px);
-  isolation: isolate;
+button,summary {
+  cursor:pointer
 }
-.hero::after {
-  position: absolute;
-  width: 430px;
-  height: 430px;
-  right: -160px;
-  top: -250px;
-  border-radius: 50%;
-  content: "";
-  background: radial-gradient(circle, var(--brand-glow), rgba(0, 113, 227, 0));
-  z-index: 0;
-  pointer-events: none;
+button:hover,a:hover {
+  color:var(--blue)
 }
-.eyebrow { color: var(--brand); font-size: 12px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; }
-.hero h1 {
-  position: relative;
-  z-index: 1;
-  max-width: 820px;
-  margin: 14px 0 12px;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "PingFang SC", sans-serif;
-  font-size: clamp(36px, 4.8vw, 54px);
-  font-weight: 700;
-  line-height: 1.07;
-  letter-spacing: -0.052em;
+button[aria-pressed=true] {
+  background:var(--blue);
+  color:var(--paper);
+  border-color:var(--blue)
 }
-.hero-subtitle { max-width: 690px; margin: 0; color: var(--muted); font-size: clamp(15px, 1.6vw, 18px); line-height: 1.55; }
-.hero-date {
-  display: inline-flex;
-  margin-top: 20px;
-  padding: 7px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--glass-border);
-  background: var(--glass-lowlight);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
+:focus-visible {
+  outline:3px solid var(--blue);
+  outline-offset:3px
 }
-
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-top: 18px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-solid);
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.025);
+.mast {
+  padding:18px 0;
+  justify-content:space-between
 }
-.metric { position: relative; padding: 18px 22px; }
-.metric:not(:last-child)::after { position: absolute; inset: 20% 0 20% auto; width: 1px; content: ""; background: var(--line); }
-.metric span { display: block; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: 0.04em; }
-.metric strong { display: block; margin-top: 4px; font-size: 32px; font-weight: 650; line-height: 1.12; letter-spacing: -0.042em; }
-
-.layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 24px; margin-top: 28px; align-items: start; }
-.sidebar {
-  position: sticky;
-  top: 82px;
-  max-height: calc(100vh - 100px);
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  background: linear-gradient(145deg, var(--glass-surface-strong), var(--glass-surface));
-  box-shadow: var(--glass-shadow);
-  -webkit-backdrop-filter: saturate(165%) blur(26px);
-  backdrop-filter: saturate(165%) blur(26px);
-  isolation: isolate;
+.mast h1 {
+  font-size:26px
 }
-.sidebar-title { margin: 2px 0 10px; padding: 0 8px; color: var(--tertiary); font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase; }
-.sidebar-paper-title { margin-top: 20px; }
-.sidebar-brief { display: grid; gap: 6px; }
-.brief-item, .source-health {
-  display: block;
-  padding: 9px 10px;
-  border-radius: 11px;
-  color: var(--ink);
-  text-decoration: none;
-  transition: background-color 100ms ease-out, transform 100ms ease-out;
+.mast p {
+  margin:0;
+  color:var(--muted)
 }
-.brief-item:hover, .source-health:hover { background: var(--surface-muted); color: var(--ink); }
-.brief-item:active, .source-health:active { transform: scale(0.985); }
-.brief-item span, .health-label { color: var(--brand); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
-.brief-item p {
-  display: -webkit-box;
-  overflow: hidden;
-  margin: 3px 0 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+.chip {
+  display:inline-block;
+  color:var(--muted);
+  text-decoration:none
 }
-.source-health { display: grid; gap: 8px; margin-top: 3px; }
-.health-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.health-head small { color: var(--tertiary); font-size: 9px; }
-.health-pills { display: flex; flex-wrap: wrap; gap: 5px; }
-.status-pill { display: inline-flex; align-items: baseline; gap: 3px; padding: 4px 7px; border-radius: 999px; font-size: 9px; font-weight: 650; }
-.status-pill strong { font-size: 11px; }
-.status-pill.success { background: var(--success-soft); color: var(--success); }
-.status-pill.partial { background: var(--warning-soft); color: var(--warning); }
-.status-pill.failed { background: var(--danger-soft); color: var(--danger); }
-.status-pill.disabled, .status-pill.skipped { background: var(--surface-muted); color: var(--muted); }
-.toc { display: grid; gap: 3px; }
-.toc a { display: block; padding: 7px 8px; border-radius: 9px; color: var(--muted); text-decoration: none; font-size: 12px; line-height: 1.38; }
-.toc a:hover { background: var(--brand-soft); color: var(--brand); }
-.toc .paper-toc { padding-left: 14px; }
-
-.content { min-width: 0; }
-.report-intro, .content-section {
-  margin-bottom: 14px;
-  padding: clamp(26px, 4vw, 46px);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-solid);
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.02);
+.decision-stack,.paper-card,.report-appendix,.industry,.archive-card,.scan {
+  background:var(--paper);
+  border:1px solid var(--rule);
+  border-radius:12px
 }
-.content-section h2, .report-intro h2 { margin: 0 0 18px; font-size: clamp(25px, 3vw, 34px); font-weight: 650; letter-spacing: -0.038em; }
-.content-section p, .report-intro p, .paper-body p { max-width: 76ch; }
 .decision-stack {
-  overflow: hidden;
-  margin-bottom: 24px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-solid);
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.02);
+  padding:15px 20px;
+  border-left:4px solid var(--blue)
 }
-.decision-item { padding: clamp(22px, 3vw, 34px); }
-.decision-item + .decision-item { border-top: 1px solid var(--line); }
-.decision-label { margin-bottom: 12px; color: var(--brand); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
-.decision-item > :last-child { margin-bottom: 0; }
-h3 { margin: 30px 0 10px; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; }
-p { margin: 8px 0 17px; }
-blockquote { margin: 18px 0; padding: 16px 18px; border-left: 3px solid var(--brand); border-radius: 0 14px 14px 0; background: var(--surface-muted); color: var(--ink); }
-ul, ol { padding-left: 1.3rem; }
-li { margin: 6px 0; }
-code { padding: 2px 6px; border-radius: 6px; background: var(--brand-soft); font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace; }
-.code-block { overflow: auto; padding: 20px; border-radius: 16px; background: #1d1d1f; color: #f5f5f7; }
-.diagram { overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-solid); }
-
-.table-wrap { overflow-x: auto; margin: 18px 0 26px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-solid); }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { background: var(--surface-muted); color: var(--muted); text-align: left; font-size: 11px; font-weight: 650; letter-spacing: 0.02em; }
-th, td { padding: 13px 15px; border-bottom: 1px solid var(--line); vertical-align: top; }
-tr:last-child td { border-bottom: 0; }
-
-.paper-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 24px 0 14px; }
-.paper-tools h2 { margin: 0 auto 0 0; font-size: clamp(28px, 3vw, 38px); font-weight: 650; letter-spacing: -0.045em; }
-.paper-search {
-  width: min(260px, 100%);
-  min-height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface-solid);
-  color: var(--ink);
-  padding: 9px 15px;
-  font: 13px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  outline: none;
+.decisions {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(330px,100%),1fr));
+  gap:20px
 }
-.paper-search:focus { border-color: var(--brand-line); box-shadow: 0 0 0 4px var(--brand-soft); }
-
-.paper-list { display: grid; gap: 10px; }
-.paper-card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-solid);
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.025), 0 7px 22px rgba(0, 0, 0, 0.025);
-  overflow: hidden;
-  transition: border-color .2s ease, transform .2s ease, box-shadow .24s ease;
+.decisions summary {
+  font-weight:550
 }
-.paper-card:hover { border-color: var(--line-strong); transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.035), 0 12px 30px rgba(0, 0, 0, 0.055); }
-.paper-card[open] { border-color: var(--brand-line); box-shadow: var(--shadow-open); }
-.paper-card[hidden] { display: none; }
-.paper-card summary {
-  display: grid;
-  grid-template-areas: "rank copy score icon";
-  grid-template-columns: 44px minmax(0, 1fr) auto 22px;
-  gap: 16px;
-  align-items: center;
-  padding: 22px 24px;
-  cursor: pointer;
-  list-style: none;
-  transition: background-color 180ms ease-out;
+.decision-label,.tag,.depth-badge,.report-meta,.paper-byline,.paper-rank,figcaption,.count {
+  font-size:13px;
+  color:var(--muted)
 }
-.paper-card.has-visual summary {
-  grid-template-areas: "rank copy visual score icon";
-  grid-template-columns: 44px minmax(0, 1fr) minmax(158px, 190px) auto 22px;
+.decision-label {
+  color:var(--blue);
+  font-weight:650
 }
-.paper-card summary:hover { background: linear-gradient(90deg, transparent, var(--surface-muted)); }
-.paper-card summary::-webkit-details-marker { display: none; }
-.paper-rank {
-  grid-area: rank;
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--brand-line);
-  border-radius: 50%;
-  background: linear-gradient(145deg, var(--brand-soft), transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
-  color: var(--brand);
-  font-weight: 700;
-  font-size: 12px;
+.decisions p {
+  margin:2px 0
 }
-.paper-summary-copy { grid-area: copy; min-width: 0; }
-.paper-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
-.depth-badge, .tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 8px; font-size: 10px; font-weight: 650; }
-.depth-badge.deep { background: var(--deep-soft); color: var(--deep); }
-.depth-badge.standard { background: var(--surface-muted); color: var(--muted); }
-.tag { border: 1px solid var(--line); color: var(--tertiary); }
-.paper-title { display: block; font-size: clamp(17px, 2vw, 21px); font-weight: 650; line-height: 1.28; letter-spacing: -0.025em; }
-.paper-tldr { display: block; max-width: 72ch; margin-top: 7px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.paper-visual {
-  position: relative;
-  grid-area: visual;
-  display: block;
-  width: 100%;
-  height: 112px;
-  padding: 5px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: #ffffff;
-  box-shadow: 0 7px 20px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  overflow: hidden;
+.decision-stack h2 {
+  font-size:19px
 }
-.paper-visual img { width: 100%; height: 100%; border-radius: 11px; object-fit: contain; transition: transform 240ms ease-out; }
-.paper-card:hover .paper-visual img { transform: scale(1.018); }
-.visual-label {
-  position: absolute;
-  inset: auto 9px 9px auto;
-  padding: 3px 7px;
-  border: 1px solid rgba(255, 255, 255, 0.54);
-  border-radius: 999px;
-  background: rgba(29, 29, 31, 0.62);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  color: #ffffff;
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
+.scan {
+  margin:16px 0;
+  overflow:hidden
 }
-.paper-score {
-  grid-area: score;
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  min-width: 62px;
-  padding: 8px 10px;
-  border: 1px solid var(--brand-line);
-  border-radius: 15px;
-  background: var(--brand-soft);
-  color: var(--brand);
+.scan-head,.paper-tools {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:12px 16px
 }
-.paper-score strong { font-size: 24px; font-weight: 650; letter-spacing: -0.052em; }
-.paper-score small { color: var(--muted); font-size: 11px; }
-.expand-icon { grid-area: icon; color: var(--tertiary); font-size: 18px; transition: transform .2s ease; }
-.paper-card[open] .expand-icon { transform: rotate(180deg); }
-.paper-body { padding: 0 clamp(24px, 4vw, 52px) 42px 80px; border-top: 1px solid var(--line); background: linear-gradient(180deg, var(--surface-muted), transparent 80px); }
-.paper-body > h3 { margin-top: 28px; color: var(--ink); }
-.paper-resource-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 18px 0 8px; }
-.paper-byline { display: flex; flex: 1 1 280px; flex-wrap: wrap; gap: 5px 14px; color: var(--muted); font-size: 11px; }
-.paper-byline span { position: relative; }
-.paper-byline span + span::before { position: absolute; left: -9px; color: var(--tertiary); content: "·"; }
-.paper-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-left: auto; }
-.paper-link { display: inline-flex; align-items: center; padding: 8px 13px; border: 1px solid transparent; border-radius: 999px; text-decoration: none; font-size: 12px; font-weight: 650; transition: background-color 160ms ease-out, border-color 160ms ease-out, transform 160ms ease-out; }
-.paper-link.primary { background: var(--brand); color: #ffffff; }
-.paper-link.primary:hover { background: var(--brand-hover); color: #ffffff; }
-.paper-link.secondary { border-color: var(--line); background: var(--surface-solid); color: var(--brand); }
-.paper-link.secondary:hover { border-color: var(--brand-line); background: var(--brand-soft); color: var(--brand); }
-.paper-link:active { transform: scale(0.975); }
-.check { display: inline-grid; place-items: center; width: 17px; height: 17px; margin-right: 7px; border: 1px solid var(--line); border-radius: 5px; }
-.check.checked { background: var(--brand); color: #ffffff; }
-.empty-state { padding: 40px; color: var(--muted); text-align: center; }
-
-.report-appendix {
-  margin-top: 24px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--surface-solid);
-  overflow: clip;
+.scan-head h2,.paper-tools h2 {
+  margin:0
 }
-.report-appendix > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 20px 24px;
-  cursor: pointer;
-  list-style: none;
+.filters {
+  padding:0 16px 10px;
+  gap:5px
 }
-.report-appendix > summary::-webkit-details-marker { display: none; }
-.report-appendix > summary span:first-child { display: grid; gap: 2px; }
-.report-appendix > summary strong { font-size: 15px; font-weight: 650; }
-.report-appendix > summary small { color: var(--muted); font-size: 11px; }
-.appendix-icon { color: var(--tertiary); transition: transform 180ms ease-out; }
-.report-appendix[open] .appendix-icon { transform: rotate(180deg); }
-.appendix-body { border-top: 1px solid var(--line); }
-.appendix-intro, .appendix-section { padding: clamp(22px, 3vw, 36px); }
-.appendix-intro + .appendix-section, .appendix-section + .appendix-section { border-top: 1px solid var(--line); }
-.appendix-section h2 { margin: 0 0 16px; font-size: clamp(20px, 2.4vw, 28px); font-weight: 650; letter-spacing: -0.03em; }
-.appendix-section > :last-child, .appendix-intro > :last-child { margin-bottom: 0; }
-
-.footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 30px; padding: 18px 4px; color: var(--muted); font-size: 12px; }
-
-@media (max-width: 900px) {
-  .shell { width: min(100% - 24px, 760px); padding-top: 16px; }
-  .metrics { grid-template-columns: repeat(2, 1fr); }
-  .metric:nth-child(2)::after { display: none; }
-  .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-  .layout { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
-  .paper-tools h2 { flex-basis: 100%; }
-  .paper-search { flex: 1 1 100%; }
+.filters button {
+  font-size:12px;
+  padding:3px 8px
 }
-
-@media (max-width: 720px) {
-  .paper-card summary, .paper-card.has-visual summary {
-    grid-template-areas: "rank copy score" ". visual visual";
-    grid-template-columns: 44px minmax(0, 1fr) auto;
+.table-wrap {
+  overflow:auto
+}
+table {
+  width:100%;
+  border-collapse:collapse;
+  text-align:left;
+  font-size:14px
+}
+th,td {
+  padding:7px 10px;
+  border-top:1px solid var(--rule);
+  vertical-align:middle
+}
+thead {
+  background:var(--pale);
+  color:var(--muted)
+}
+.scan table {
+  table-layout:fixed
+}
+.scan th:nth-child(1) {
+  width:14%
+}
+.scan th:nth-child(2) {
+  width:28%
+}
+.scan th:nth-child(4) {
+  width:7%
+}
+.scan th:nth-child(5) {
+  width:5%
+}
+.scan td {
+  font-size:13px;
+  padding:6px 10px
+}
+.scan td span,.scan td a {
+  display:block;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+.scan td a {
+  font-weight:650
+}
+.scan td:last-child {
+  font-variant-numeric:tabular-nums;
+  font-weight:700;
+  color:var(--blue)
+}
+.paper-tools {
+  padding-inline:0
+}
+.paper-card,.report-appendix,.industry {
+  margin-bottom:10px;
+  scroll-margin-top:12px
+}
+.paper-card>summary {
+  display:flex;
+  align-items:center;
+  gap:18px;
+  padding:15px 20px
+}
+.paper-summary-copy {
+  flex:1;
+  min-width:0
+}
+.paper-title,.paper-tldr {
+  display:block
+}
+.paper-title {
+  font-size:19px;
+  font-weight:680
+}
+.paper-tldr {
+  color:var(--muted);
+  margin-top:4px
+}
+.depth-badge.deep {
+  color:var(--accent)
+}
+.paper-score small {
+  font-size:11px;
+  color:var(--muted)
+}
+.paper-body,.appendix-body,.industry {
+  padding:20px clamp(15px,4vw,60px);
+  overflow-wrap:anywhere
+}
+.paper-body {
+  border-top:1px solid var(--rule)
+}
+.paper-body h3 {
+  margin-top:1.5em
+}
+.paper-body p {
+  max-width:95ch
+}
+.paper-resource-bar {
+  display:grid;
+  gap:8px
+}
+.paper-byline span {
+  margin-right:12px
+}
+.paper-link {
+  font-size:14px
+}
+figure {
+  margin:20px 0;
+  background:var(--bg);
+  padding:12px;
+  border-radius:8px
+}
+figure img {
+  display:block;
+  max-width:100%;
+  max-height:75vh;
+  margin:auto;
+  object-fit:contain
+}
+figcaption {
+  margin:8px 0 0
+}
+pre {
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  background:var(--pale);
+  padding:12px
+}
+blockquote {
+  border-left:3px solid var(--rule);
+  margin-left:0;
+  padding-left:15px
+}
+.report-appendix>summary {
+  padding:14px 20px
+}
+.report-appendix small {
+  margin-left:12px;
+  color:var(--muted)
+}
+footer {
+  padding:25px 0;
+  color:var(--muted)
+}
+[hidden] {
+  display:none!important
+}
+.archive {
+  max-width:1060px
+}
+.archive header {
+  margin:34px 0 18px
+}
+.archive input {
+  width:min(100%,510px);
+  padding:10px 12px
+}
+.archive-card {
+  display:grid;
+  gap:3px;
+  padding:12px 18px;
+  margin:6px 0;
+  color:inherit;
+  text-decoration:none
+}
+.archive-card:hover {
+  border-color:var(--blue)
+}
+.archive-card time {
+  font-size:13px;
+  color:var(--blue);
+  font-variant-numeric:tabular-nums
+}
+.month-group {
+  margin:24px 0
+}
+.month-group h2 {
+  font-size:18px
+}
+.empty-state {
+  padding:16px
+}
+@media(max-width:760px) {
+  .scan table {
+    width:850px
   }
-  .paper-card:not(.has-visual) summary { grid-template-areas: "rank copy score"; }
-  .paper-visual { height: 160px; margin-top: 2px; }
-  .expand-icon { display: none; }
+  .mast {
+    align-items:flex-start
+  }
+  .decisions {
+    grid-template-columns:1fr
+  }
+  .paper-score {
+    display:none
+  }
+  .paper-card>summary {
+    padding:12px;
+    gap:8px
+  }
 }
-
-@media (max-width: 600px) {
-  .shell { width: min(100% - 20px, 560px); padding-top: 10px; }
-  .topbar { top: 8px; min-height: 50px; margin-bottom: 14px; border-radius: 16px; }
-  .top-actions .control-button { display: none; }
-  .hero { padding: 32px 24px; border-radius: 26px; }
-  .hero h1 { font-size: 36px; }
-  .hero-subtitle { font-size: 16px; }
-  .metrics { padding: 4px; border-radius: 20px; }
-  .metric { padding: 15px 16px; }
-  .metric strong { font-size: 25px; }
-  .report-intro, .content-section, .decision-item, .appendix-intro, .appendix-section { padding: 24px 20px; }
-  .decision-stack, .report-appendix { border-radius: 20px; }
-  .paper-card { border-radius: 20px; }
-  .paper-card summary, .paper-card.has-visual summary { grid-template-columns: 38px minmax(0, 1fr) auto; gap: 11px; padding: 18px 16px; }
-  .paper-rank { width: 36px; height: 36px; }
-  .paper-visual { height: 148px; }
-  .paper-score strong { font-size: 22px; }
-  .paper-tldr { -webkit-line-clamp: 2; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
-  .paper-body { padding: 0 17px 28px; }
-  .paper-resource-bar { align-items: flex-start; padding-top: 15px; }
-  .paper-byline { flex-basis: 100%; }
-  .paper-actions { justify-content: flex-start; margin-left: 0; }
-  .footer { display: block; }
-}
-
 @media print {
-  .topbar, .sidebar, .paper-tools input, .paper-tools button, .reading-progress { display: none !important; }
-  body { background: #fff; color: #111; }
-  .shell { width: 100%; padding: 0; }
-  .hero, .metrics, .metric, .report-intro, .content-section, .decision-stack, .report-appendix, .paper-card { box-shadow: none; background: #fff; break-inside: avoid; }
-  .layout { display: block; }
-  .paper-card { margin-bottom: 12px; }
-  .paper-card .paper-body { display: block; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
-  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  body { background-image: none; }
-  .topbar, .sidebar, .hero { background: var(--surface-solid); -webkit-backdrop-filter: none; backdrop-filter: none; }
-  .topbar::before, .sidebar::before, .hero::before { display: none; }
-}
-
-@media (prefers-contrast: more) {
-  .topbar, .sidebar, .hero, .metrics, .decision-stack, .paper-card, .report-appendix { border-color: var(--line-strong); }
-  .muted, .paper-tldr, .brief-item p { color: var(--ink); }
+  .top-actions,.filters,.paper-tools input {
+    display:none
+  }
 }
 """
 
 
-def _report_script(has_mermaid: bool) -> str:
-    """Return progressive-enhancement JavaScript for report interactions."""
-    mermaid_loader = """
-const mermaidScript = document.createElement('script');
-mermaidScript.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-mermaidScript.onload = () => window.mermaid.initialize({ startOnLoad: true, theme: resolvedTheme() === 'dark' ? 'dark' : 'neutral' });
-document.head.appendChild(mermaidScript);
-""" if has_mermaid else ""
-    return f"""
+
+THEME_SCRIPT = """
 const root = document.documentElement;
-const themeToggle = document.getElementById('theme-toggle');
-const themeColor = document.querySelector('meta[name="theme-color"]');
-const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-let storedTheme = null;
-try {{ storedTheme = localStorage.getItem('paperpulse-theme'); }} catch (error) {{ storedTheme = null; }}
-if (storedTheme) root.dataset.theme = storedTheme;
-
-const resolvedTheme = () => root.dataset.theme || (systemTheme.matches ? 'dark' : 'light');
-const syncThemeButton = () => {{
-  const dark = resolvedTheme() === 'dark';
-  themeToggle.textContent = dark ? '浅色' : '深色';
-  themeToggle.setAttribute('aria-label', dark ? '切换到浅色外观' : '切换到深色外观');
-  themeColor.setAttribute('content', dark ? '#000000' : '#f5f5f7');
-}};
-syncThemeButton();
-
-themeToggle.addEventListener('click', () => {{
-  const next = resolvedTheme() === 'dark' ? 'light' : 'dark';
-  root.dataset.theme = next;
-  try {{ localStorage.setItem('paperpulse-theme', next); }} catch (error) {{ /* Local files may deny storage. */ }}
-  syncThemeButton();
-}});
-if (systemTheme.addEventListener) {{
-  systemTheme.addEventListener('change', () => {{ if (!root.dataset.theme) syncThemeButton(); }});
-}}
-
-const cards = [...document.querySelectorAll('.paper-card')];
-const appendix = document.getElementById('report-appendix');
-document.querySelectorAll('.paper-visual img').forEach(image => {{
-  const disableVisual = () => {{
-    const card = image.closest('.paper-card');
-    const visual = image.closest('.paper-visual');
-    if (card) card.classList.remove('has-visual');
-    if (visual) visual.remove();
-  }};
-  if (image.complete && image.naturalWidth === 0) disableVisual();
-  else image.addEventListener('error', disableVisual, {{ once: true }});
-}});
-document.getElementById('expand-all').addEventListener('click', () => cards.filter(card => !card.hidden).forEach(card => card.open = true));
-document.getElementById('collapse-all').addEventListener('click', () => cards.forEach(card => card.open = false));
-
-document.querySelectorAll('[data-target]').forEach(link => {{
-  link.addEventListener('click', event => {{
-    if (!appendix) return;
-    event.preventDefault();
-    appendix.open = true;
-    const target = document.getElementById(link.dataset.target);
-    requestAnimationFrame(() => (target || appendix).scrollIntoView({{
-      behavior: reducedMotion.matches ? 'auto' : 'smooth',
-      block: 'start'
-    }}));
-  }});
-}});
-
-const search = document.getElementById('paper-search');
-const empty = document.getElementById('empty-state');
-search.addEventListener('input', () => {{
-  const query = search.value.trim().toLowerCase();
-  let visible = 0;
-  cards.forEach(card => {{
-    card.hidden = query.length > 0 && !card.dataset.search.includes(query);
-    if (!card.hidden) visible += 1;
-  }});
-  empty.hidden = visible !== 0;
-}});
-
-const progress = document.getElementById('reading-progress');
-const updateProgress = () => {{
-  const height = document.documentElement.scrollHeight - window.innerHeight;
-  progress.style.width = `${{height > 0 ? (window.scrollY / height) * 100 : 0}}%`;
-}};
-document.addEventListener('scroll', updateProgress, {{ passive: true }});
-updateProgress();
-
-let printOpenStates = [];
-let printAppendixOpen = false;
-window.addEventListener('beforeprint', () => {{
-  printOpenStates = cards.map(card => card.open);
-  cards.forEach(card => card.open = true);
-  if (appendix) {{ printAppendixOpen = appendix.open; appendix.open = true; }}
-}});
-window.addEventListener('afterprint', () => {{
-  cards.forEach((card, index) => card.open = printOpenStates[index]);
-  if (appendix) appendix.open = printAppendixOpen;
-}});
-{mermaid_loader}
+const theme = document.querySelector('#theme-toggle');
+try { if(localStorage.getItem('paperpulse-theme')==='dark') root.dataset.theme='dark'; } catch {}
+function syncTheme(){
+  document.querySelector('meta[name="color-scheme"]').content=root.dataset.theme;
+  theme.textContent=root.dataset.theme==='dark'?'浅色':'深色';theme.setAttribute('aria-label','切换为'+theme.textContent+'主题')}
+theme.addEventListener('click',()=>{root.dataset.theme=root.dataset.theme==='dark'?'light':'dark';
+  try{localStorage.setItem('paperpulse-theme',root.dataset.theme)}catch{} syncTheme()});
+syncTheme();
 """
+
+DAILY_SCRIPT = """
+const rows=[...document.querySelectorAll('[data-paper]')];
+const buttons=[...document.querySelectorAll('[data-category]')];
+const query=document.querySelector('#paper-search');
+let category='';
+function filter(){
+  let count=0;
+  for(const row of rows){
+    const card=document.getElementById(row.dataset.paper);
+    const categoryMatches = !category || JSON.parse(row.dataset.categories).includes(category);
+    const searchable = (row.textContent + ' ' + card.dataset.search).toLowerCase();
+    const match = categoryMatches && searchable.includes(query.value.trim().toLowerCase());
+    row.hidden=card.hidden=!match;
+    if(match)count++;
+  }
+  document.querySelector('#count').textContent=count+' / '+rows.length+' 篇';
+  document.querySelector('#empty-state').hidden=count>0;
+}
+buttons.forEach(button=>button.addEventListener('click',()=>{
+  category=button.dataset.category;
+  buttons.forEach(b=>b.setAttribute('aria-pressed',String(b===button)));filter()
+}));
+query.addEventListener('input',filter);
+document.querySelectorAll('.scan a').forEach(link=>link.addEventListener('click',event=>{
+  event.preventDefault();const card=document.getElementById(link.closest('tr').dataset.paper);
+  card.open=true;card.querySelector('summary').focus({preventScroll:true});
+  card.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+}));
+for(const open of [true,false]) document.getElementById(open?'expand-all':'collapse-all').onclick=()=>{
+  for(const card of document.querySelectorAll('.paper-card:not([hidden])'))card.open=open;
+};
+let printState = [];
+window.addEventListener('beforeprint', () => {
+  printState = [...document.querySelectorAll('details')].map(node => [node, node.open]);
+  for (const [node] of printState) node.open = true;
+});
+window.addEventListener('afterprint', () => {
+  for (const [node, open] of printState) node.open = open;
+});
+document.querySelectorAll('[data-appendix]').forEach(a=>a.onclick=()=>{document.querySelector('#report-appendix').open=true});
+"""
+
+
+def page(title, body, script):
+    return f"""<!doctype html>
+<html lang="zh-CN" data-theme="light"><head><meta charset="utf-8">
+<meta name="color-scheme" content="light"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)} · PaperPulse</title>
+<style>{_report_css()}</style></head><body>
+<header class="topbar"><a class="brand" href="index.html" aria-label="返回日报列表">Paper<b>Pulse</b></a>
+<div class="top-actions"><a href="index.html">历史日报</a><button id="theme-toggle">深色</button></div></header>
+{body}<script>{THEME_SCRIPT}{script}</script></body></html>"""
 
 
 def render_report(markdown: str, source_path: Path, open_top: int) -> str:
-    """Create a complete interactive HTML document from one digest."""
     title, prelude, sections = _parse_document(markdown)
-    paper_sections = [section for section in sections if section.is_paper]
-    regular_sections = [section for section in sections if not section.is_paper]
     date_match = DATE_PATTERN.search(source_path.stem) or DATE_PATTERN.search(title)
-    report_date = date_match.group(0) if date_match is not None else source_path.stem
-    paper_count = len(paper_sections)
-    selected_count = _extract_count(
-        markdown,
-        (r"入选\s*([0-9]+)\s*篇", r"Selected\s*[:：]\s*([0-9]+)", r"精选\s*([0-9]+)\s*篇"),
-        paper_count,
-    )
-    candidate_count = _extract_count(
-        markdown,
-        (r"原始收集\s*([0-9]+)\s*条", r"Collected\s*[:：]\s*([0-9]+)", r"([0-9]+)\s*篇新候选"),
-        selected_count,
-    )
-    scores = [meta.score for meta in (_paper_meta(section) for section in paper_sections) if meta.score is not None]
-    top_score = max(scores) if scores else None
-    deep_count = sum(
-        1
-        for section in paper_sections
-        if "全文" in _paper_meta(section).read_depth or "精读" in _paper_meta(section).read_depth
-    )
-    reading_minutes = max(1, round(len(markdown) / 900))
+    day = date_match[0] if date_match else title
+    papers = [s for s in sections if s.is_paper]
+    decisions = [s for s in sections if _section_name(s) in PRIMARY_SECTION_NAMES]
+    if not decisions:
+        decisions = [s for s in sections if _section_name(s) in {"效果", "结论", "summary", "key findings"}][:1]
+    industry = [s for s in sections if s.title.startswith("行业与开源速递")]
+    appendix = [s for s in sections if not s.is_paper and s not in decisions+industry and _section_name(s) not in REDUNDANT_SECTION_NAMES]
+    source = next((s for s in appendix if _section_name(s) in {"数据源状态", "sources", "source status"}), None)
+    health_html = ""
+    if source:
+        health = _source_health(source)
+        states = ((health.successful,"正常"),(health.partial,"部分"),(health.failed,"失败"),
+                  (health.disabled,"停用"),(health.skipped,"未运行"),(health.unknown,"未知"))
+        health_html = f'<a class="chip" data-appendix href="#{source.anchor}">信源 · ' + " / ".join(f"{n} {label}" for n,label in states if n) + '</a>'
+    candidate = _extract_count(markdown,(r"Collected\s*[:：]\s*(\d+)",r"原始收集\s*(\d+)\s*条",r"(\d+)\s*篇新候选"),None)
+    rows, categories = [], []
+    deep = 0
+    for s in papers:
+        m = _paper_meta(s)
+        deep += int("全文" in m.read_depth or "精读" in m.read_depth)
+        for cat in m.categories:
+            if cat not in categories:
+                categories.append(cat)
+        names = html.escape(" · ".join(m.categories) or "未标注")
+        name = html.escape(s.paper_title)
+        summary = html.escape(m.summary)
+        score = format(m.score, ".2f").rstrip("0").rstrip(".") if m.score is not None else "—"
+        rows.append(f'<tr data-paper="{s.anchor}" data-categories="{html.escape(json.dumps(m.categories, ensure_ascii=False),quote=True)}">'
+                    f'<td><span title="{names}">{names}</span></td><td><a href="#{s.anchor}" title="{name}">{name}</a></td>'
+                    f'<td><span title="{summary}">{summary}</span></td><td>{html.escape(m.read_depth)}</td><td>{score}</td></tr>')
+    filters = '<button data-category="" aria-pressed="true">全部</button>' + "".join(
+        f'<button data-category="{html.escape(c)}" aria-pressed="false">{html.escape(c)}</button>' for c in categories)
+    decision_body = "".join(f'<details><summary><span class="decision-label">{html.escape(s.title)}</span><br>'
+                            f'{html.escape(_first_readable_line(s.body))}</summary>{_render_blocks(s.body)}</details>' for s in decisions)
+    decision_html = f'<section class="decision-stack"><h2>今日判断与行动</h2><div class="decisions">{decision_body}</div></section>' if decisions else ""
+    briefs = "".join(f'<section class="industry"><h2>{html.escape(s.title)}</h2>{_render_blocks(s.body)}</section>' for s in industry)
+    appendix_body = _render_blocks(prelude) + "".join(f'<section id="{s.anchor}"><h2>{html.escape(s.title)}</h2>{_render_blocks(s.body)}</section>' for s in appendix)
+    appendix_html = f'<details class="report-appendix" id="report-appendix"><summary>报告背景与数据源</summary><div class="appendix-body">{appendix_body}</div></details>' if appendix_body else ""
+    cards = "".join(_render_paper_card(s,i,open_top) for i,s in enumerate(papers,1))
+    headers = "".join(f'<th scope="col">{h}</th>' for h in ("研究方向","论文","一句话结论","阅读深度","评分"))
+    return page(title,f"""<main><header class="mast"><h1>{html.escape(day)} 研究晨读</h1>
+<p>候选 <b>{candidate if candidate is not None else '未记录'}</b>　入选 <b>{len(papers)}</b>　精读 <b>{deep}</b>　{health_html}</p></header>
+{decision_html}<section class="scan" aria-labelledby="scan-title"><div class="scan-head"><h2 id="scan-title">今日论文速览</h2>
+<span class="count" id="count" aria-live="polite">{len(papers)} / {len(papers)} 篇</span></div>
+<div class="filters" role="group" aria-label="按研究方向筛选">{filters}
+<input id="paper-search" type="search" aria-label="搜索论文" placeholder="搜索论文"></div>
+<div class="table-wrap"><table aria-label="今日论文速览"><thead><tr>{headers}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>
+<p class="empty-state" id="empty-state" hidden>没有匹配的论文。</p></section>{briefs}
+<div class="paper-tools"><h2>逐篇阅读</h2><div><button id="expand-all">全部展开</button> <button id="collapse-all">全部收起</button></div></div>
+{cards}{appendix_html}</main>""", DAILY_SCRIPT)
 
-    intro_html = _render_blocks(prelude)
-    primary_sections = [
-        section for section in regular_sections if _section_name(section) in PRIMARY_SECTION_NAMES
-    ]
-    if not primary_sections:
-        fallback = next(
-            (
-                section
-                for section in regular_sections
-                if _section_name(section) in {"效果", "结论", "summary", "key findings"}
-            ),
-            None,
-        )
-        if fallback is not None:
-            primary_sections = [fallback]
-    primary_ids = {id(section) for section in primary_sections}
-    supporting_sections = [
-        section
-        for section in regular_sections
-        if id(section) not in primary_ids and _section_name(section) not in REDUNDANT_SECTION_NAMES
-    ]
 
-    decision_html = "\n".join(
-        f'<article class="decision-item" id="{html.escape(section.anchor, quote=True)}">'
-        f'<div class="decision-label">{_render_inline(section.title)}</div>'
-        f"{_render_blocks(section.body)}</article>"
-        for section in primary_sections
-    )
-    appendix_sections_html = "\n".join(
-        f'<section class="appendix-section" id="{html.escape(section.anchor, quote=True)}">'
-        f"<h2>{_render_inline(section.title)}</h2>{_render_blocks(section.body)}</section>"
-        for section in supporting_sections
-    )
-    appendix_intro_html = (
-        f'<div class="appendix-intro">{intro_html}</div>' if intro_html.strip() else ""
-    )
-    appendix_html = (
-        '<details class="report-appendix" id="report-appendix">'
-        '<summary><span><strong>报告背景与数据源</strong>'
-        '<small>查看完整背景、筛选流程、效果与数据源状态</small></span>'
-        '<span class="appendix-icon" aria-hidden="true">⌄</span></summary>'
-        '<div class="appendix-body">'
-        f"{appendix_intro_html}"
-        f"{appendix_sections_html}</div></details>"
-        if intro_html.strip() or appendix_sections_html.strip()
-        else ""
-    )
-    paper_html = "\n".join(
-        _render_paper_card(section, index, open_top) for index, section in enumerate(paper_sections, start=1)
-    )
-    sidebar_brief_html = _render_sidebar_brief(supporting_sections)
-    toc_papers = "".join(
-        f'<a class="paper-toc" href="#{html.escape(section.anchor, quote=True)}">'
-        f"{index:02d} · {html.escape(_truncate(section.paper_title or section.title, 42))}</a>"
-        for index, section in enumerate(paper_sections, start=1)
-    )
-    top_score_display = f"{top_score:.1f}" if top_score is not None else "—"
-    generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    has_mermaid = 'class="mermaid"' in appendix_html or 'class="mermaid"' in paper_html
+def archive_meta(path):
+    source = path.with_suffix(".md")
+    if not source.exists():
+        return "", [], [], ""
+    _, _, sections = _parse_document(source.read_text(encoding="utf-8"))
+    papers = [s for s in sections if s.is_paper]
+    top = sorted(papers, key=lambda s: _paper_meta(s).score or 0, reverse=True)[:3]
+    directions = list(dict.fromkeys(c for s in top for c in _paper_meta(s).categories))
+    theme = next((_first_readable_line(s.body) for name in
+                  ("今日判断与行动", "今日决策", "今日结论", "结论", "效果", "背景")
+                  for s in sections if _section_name(s) == name), "")
+    keywords = " ".join(f"{s.paper_title} {' '.join(_paper_meta(s).categories)}" for s in papers)
+    return theme or " · ".join(directions), [s.paper_title for s in top], directions, keywords
 
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f5f7">
-  <meta name="description" content="PaperPulse daily research intelligence report for {html.escape(report_date, quote=True)}">
-  <title>{html.escape(title)} · PaperPulse</title>
-  <style>{_report_css()}</style>
-</head>
-<body>
-  <div class="reading-progress" id="reading-progress"></div>
-  <div class="shell">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" focusable="false">
-            <circle class="pulse-ring" cx="16" cy="16" r="13"></circle>
-            <path class="pulse-wave" d="M3 16h5l2.4-4.2 3.4 9 4.2-14 3.2 9.2H29"></path>
-          </svg>
-        </span>
-        <span>PaperPulse</span>
-      </div>
-      <div class="top-actions">
-        <button class="control-button" id="collapse-all" type="button">全部收起</button>
-        <button class="control-button" id="expand-all" type="button">全部展开</button>
-        <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅主题">外观</button>
-      </div>
-    </header>
 
-    <section class="hero">
-      <div class="eyebrow">Daily Research Intelligence</div>
-      <h1>{html.escape(title)}</h1>
-      <p class="hero-subtitle">先看决策信号，再按需展开论文证据。精读内容、实验结果和落地建议集中在卡片内部。</p>
-      <span class="hero-date">{html.escape(report_date)}</span>
-    </section>
+def render_archive_index(report_paths: Sequence[Path]) -> str:
+    entries = {}
+    for path in sorted(report_paths):
+        if not DATE_PATTERN.fullmatch(path.stem) or path.suffix not in (".html",".md"):
+            continue
+        try:
+            datetime.strptime(path.stem,"%Y-%m-%d")
+        except ValueError:
+            continue
+        if path.stem not in entries or path.suffix == ".html":
+            entries[path.stem] = path
+    groups = {}
+    for day,path in sorted(entries.items(),reverse=True):
+        theme, top, directions, keywords = archive_meta(path)
+        terms = " ".join([day, theme, keywords, *top, *directions]).lower()
+        meta = " · ".join(top)
+        label = theme or day
+        tags = " · ".join(directions)
+        groups.setdefault(day[:7],[]).append(
+            f'<a class="archive-card" data-search="{html.escape(terms)}" href="{quote(path.name)}"><time>{day}</time>'
+            f'<strong>{html.escape(label)}</strong><span class="report-meta">{html.escape(tags)}</span>'
+            f'<span class="report-meta">{html.escape(meta)}</span></a>')
+    body = "".join(f'<section class="month-group"><h2>{month}</h2>{"".join(items)}</section>' for month,items in groups.items())
+    return page("历史日报",f"""<main class="archive"><header><h1>历史日报</h1><p><strong>{len(entries)}</strong> 份报告</p>
+<input id="archive-search" type="search" aria-label="搜索历史日报" placeholder="搜索标题、关键词、方向或日期"></header>
+{body}<p id="archive-empty" {'hidden' if entries else ''}>没有匹配的日报。</p></main>""", """
+const groups=document.querySelectorAll('.month-group');
+document.querySelector('#archive-search').oninput=event=>{
+ const terms=event.target.value.toLowerCase().trim().split(/\\s+/);
+ let visible=0;
+ for(const group of groups){
+   const cards=[...group.querySelectorAll('.archive-card')];
+   for(const card of cards){card.hidden=!terms.every(x=>card.dataset.search.includes(x));if(!card.hidden)visible++}
+   group.hidden=cards.every(c=>c.hidden);
+ }
+ document.querySelector('#archive-empty').hidden=visible>0;
+};""")
 
-    <section class="metrics" aria-label="日报关键指标">
-      <div class="metric"><span>候选论文</span><strong>{candidate_count}</strong></div>
-      <div class="metric"><span>最终入选</span><strong>{selected_count}</strong></div>
-      <div class="metric"><span>全文精读</span><strong>{deep_count}</strong></div>
-      <div class="metric"><span>最高评分</span><strong>{top_score_display}</strong></div>
-    </section>
-
-    <div class="layout">
-      <aside class="sidebar">
-        <div class="sidebar-title">今日速览</div>
-        <div class="sidebar-brief">{sidebar_brief_html}</div>
-        <div class="sidebar-title sidebar-paper-title">论文导航</div>
-        <nav class="toc">{toc_papers}</nav>
-      </aside>
-
-      <main class="content">
-        {f'<section class="decision-stack" id="daily-brief">{decision_html}</section>' if decision_html.strip() else ''}
-
-        <div class="paper-tools" id="papers">
-          <h2>论文精读卡片</h2>
-          <input class="paper-search" id="paper-search" type="search" placeholder="搜索标题或分类" aria-label="搜索论文">
-          <button class="control-button" id="expand-all-inline" type="button" onclick="document.getElementById('expand-all').click()">展开</button>
-        </div>
-        <div class="paper-list">{paper_html}</div>
-        <div class="empty-state" id="empty-state" hidden>没有匹配的论文卡片。</div>
-        {appendix_html}
-      </main>
-    </div>
-
-    <footer class="footer">
-      <span>PaperPulse · Evidence before confidence</span>
-      <span>约 {reading_minutes} 分钟阅读 · 生成于 {html.escape(generated_at)}</span>
-    </footer>
-  </div>
-  <script>{_report_script(has_mermaid)}</script>
-</body>
-</html>
-"""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1587,15 +1227,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if source == output:
         LOGGER.error("Source and output paths must differ")
         return 2
+    archive_index: Optional[Path] = None
     try:
         markdown = source.read_text(encoding="utf-8")
         report = render_report(markdown, source, args.open_top)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(report, encoding="utf-8")
+        if DATE_PATTERN.fullmatch(source.stem) and output.name != "index.html":
+            archive_index = output.parent / "index.html"
+            report_paths = [*output.parent.glob("????-??-??.html"), *output.parent.glob("????-??-??.md")]
+            archive_index.write_text(render_archive_index(report_paths), encoding="utf-8")
     except (OSError, UnicodeError, ValueError) as error:
         LOGGER.exception("Unable to render digest: %s", error)
         return 1
     LOGGER.info("Rendered %s", output)
+    if archive_index is not None:
+        LOGGER.info("Updated report archive %s", archive_index)
     return 0
 
 

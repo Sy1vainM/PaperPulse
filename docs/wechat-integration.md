@@ -75,8 +75,8 @@ When `wechat_mp` is enabled, the agent should:
    - Project pages.
    - Model or benchmark names.
    - Institutions and key results when visible.
-6. Add extracted artifacts to the main candidate pool.
-7. Deduplicate against other sources by arXiv ID, DOI, URL, and normalized title.
+6. Send papers with primary sources to the paper candidate pool. Keep non-paper releases in the separate roundup.
+7. Use `scripts/dedup_seen.py filter` on paper candidates. Deduplicate release news by original release and version.
 8. Treat WeChat as a discovery signal, not as the primary paper record.
 
 ## Failure Handling
@@ -101,3 +101,13 @@ A minimal validation is:
 3. Confirm original paper, GitHub, model, or benchmark links can be extracted when present.
 4. Run PaperPulse with `wechat_mp.enabled: true`.
 5. Confirm WeChat items merge into the main candidate pool and do not duplicate arXiv or HuggingFace entries.
+
+## 最近发布与开源速递
+
+Search accepts `--objective`; the default requests the last 1–3 days and excludes old reposts. Extract each article separately, from stdin or `--input`:
+
+```sh
+python3 scripts/wechat_connector.py fetch 'https://mp.weixin.qq.com/s/...' | python3 scripts/wechat_connector.py extract
+```
+
+Extraction yields a publication date (null if unknown) and potential primary URLs. Check the original date, author ownership, release tag and concrete change before publication. Use the four-section paper template for verified research; list 3–5 verified non-paper releases under **行业与开源速递（微信信源）** with both discovery and original links. Fewer verified items is acceptable. Record the actual count and connector state in the private daily JSON log.

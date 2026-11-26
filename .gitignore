@@ -4,6 +4,7 @@ config.yaml
 # Private runtime state
 last_run.json
 seen_papers.json
+seen_papers.json.lock
 
 # Generated private archives
 digests/*

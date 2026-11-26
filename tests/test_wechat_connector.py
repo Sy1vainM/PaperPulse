@@ -29,6 +29,29 @@ CONNECTOR = _load_connector()
 class WeChatConnectorTests(unittest.TestCase):
     """Verify query normalization and strict fetch boundaries."""
 
+    def test_extract_keeps_results_separate(self):
+        data = {"results": [
+            {"publishedDate":"2026-11-24T08:10Z","text":"https://github.com/example/release"},
+            {"text":"引用 2022-01-01。发布于：2026年11月25日 项目主页 https://example.org/project"},
+            {"text":"提到 2021-01-01 https://mp.weixin.qq.com/s/x"},
+        ]}
+        articles = CONNECTOR.extract_results(data)
+        self.assertEqual([v["published"] for v in articles], ["2026-11-24","2026-11-25",None])
+        self.assertEqual(articles[1]["links"][0]["kind"], "project_candidate")
+        self.assertFalse(articles[2]["links"])
+        self.assertTrue(CONNECTOR.build_parser().parse_args(["search","topic"]).objective)
+
+    def test_exa_text_envelope_separates_publication_from_quoted_dates(self):
+        data = {"content":[{"text":"Title: A\nURL: https://mp.weixin.qq.com/s/a\nPublished: N/A\n"
+                                 "published 2020-01-01 https://github.com/org/one\n"
+                                 "Title: B\nURL: https://mp.weixin.qq.com/s/b\nPublished: 2026-11-25\n"
+                                 "https://huggingface.co/org/two"}]}
+        first, second = CONNECTOR.extract_results(data)
+        self.assertIsNone(first["published"])
+        self.assertEqual(second["published"], "2026-11-25")
+        self.assertEqual(second["source"], "https://mp.weixin.qq.com/s/b")
+        self.assertEqual(len(first["links"]), 1)
+
     @patch.object(CONNECTOR, "_mcporter_call", return_value=0)
     @patch.object(CONNECTOR, "_validate_runtime")
     def test_search_adds_wechat_domain(
@@ -36,14 +59,14 @@ class WeChatConnectorTests(unittest.TestCase):
         _validate_runtime: Mock,
         mcporter_call: Mock,
     ) -> None:
-        args = argparse.Namespace(query="示例公众号 多模态", num_results=3, timeout_ms=60000)
+        args = argparse.Namespace(query="示例公众号 多模态", num_results=3, objective="find releases", timeout_ms=60000)
 
         result = CONNECTOR.search_wechat(args)
 
         self.assertEqual(result, 0)
         mcporter_call.assert_called_once_with(
             "exa.web_search_exa",
-            {"query": "site:mp.weixin.qq.com 示例公众号 多模态", "numResults": 3},
+            {"query": "site:mp.weixin.qq.com 示例公众号 多模态", "numResults": 3, "objective": "find releases"},
             60000,
         )
 

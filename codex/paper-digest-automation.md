@@ -6,7 +6,7 @@ This is the Codex entry point for PaperPulse.
 
 1. Work from the repository root.
 2. Read `docs/agent-protocol.md`.
-3. Read `config.yaml`, `last_run.json`, `seen_papers.json`, and `sources-reference.md`.
+3. Read `config.yaml`, `last_run.json`, and `sources-reference.md`.
 4. If `wechat_mp` is enabled, also read `docs/wechat-integration.md`.
 5. Follow the shared protocol exactly.
 6. Apply the configured tiered reading policy before writing the final report.
@@ -30,3 +30,5 @@ End with a concise run report:
 - Top selected papers with one-line reasons.
 
 If `config.yaml` is missing, stop and tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
+
+Use `python3 scripts/dedup_seen.py filter --input candidates.json` before scoring and `record --input processed.json` after success. Keep the historical ledger outside model context. Write the four-section paper cards and separate verified WeChat release roundup from the shared protocol. Write `logs/YYYY-MM-DD.json` on success, partial success, or failure.

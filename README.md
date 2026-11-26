@@ -1,6 +1,6 @@
 # PaperPulse
 
-PaperPulse is an agent-ready daily paper digest system that tracks new research, filters it by your work context, and archives concise summaries for long-term knowledge building.
+PaperPulse is an agent-ready daily paper digest system that tracks new research, ranks it by its contribution to your research fields, and archives concise summaries for long-term knowledge building.
 
 ## What It Does
 
@@ -8,7 +8,7 @@ PaperPulse gives your coding or research agent a stable workflow for daily paper
 
 - Collect new papers from enabled sources.
 - Deduplicate papers already seen in previous runs.
-- Score papers against your configured work context.
+- Select papers by field contribution, then describe what the findings might mean for your projects.
 - Generate a Chinese structured Markdown source and an interactive HTML report.
 - Deep-read the highest-ranked papers and label the evidence depth honestly.
 - Optionally sync selected papers to Notion or Obsidian when configured.
@@ -64,7 +64,7 @@ flowchart TD
     D -- "Yes" --> E["Report Already ran today"]
     D -- "No" --> F["Collect enabled sources"]
     F --> G["Deduplicate and filter seen papers"]
-    G --> H["Score against work context"]
+    G --> H["Score field contribution"]
     H --> I["Deep-read configured Top N"]
     I --> J["Write digests/YYYY-MM-DD.md"]
     J --> K["Render interactive HTML"]
@@ -96,9 +96,10 @@ Each successful run writes a version-neutral Markdown source and, when enabled, 
 ```text
 digests/YYYY-MM-DD.md
 digests/YYYY-MM-DD.html
+digests/index.html        # stable date archive
 ```
 
-The HTML report adds executive signals, responsive navigation, search, theme switching, a static pulse identity, and expandable evidence cards. Cards can show an official paper figure plus verified PDF, project, and code actions when those resources are recorded in Markdown; missing media falls back cleanly to the text layout. The highest-ranked papers receive full-text review according to `report.deep_read_top_n`; every card states its actual reading depth. Obsidian sync, when enabled, continues to copy the Markdown source into the configured vault directory.
+Bookmark `digests/index.html`; each successful dated render rebuilds it as a searchable list of daily themes, top papers, directions, and dates. Open a date from the archive, then use the PaperPulse brand or `日报列表` action to return. The HTML report adds executive signals, responsive navigation, search, theme switching, a two-minute morning overview, and expandable evidence cards. Cards can show an official paper figure plus verified PDF, project, and code actions when those resources are recorded in Markdown; missing media falls back cleanly to the text layout. The highest-ranked papers receive full-text review according to `report.deep_read_top_n`; every card states its actual reading depth. Obsidian sync, when enabled, continues to copy the Markdown source into the configured vault directory.
 
 Before publishing changes, run the privacy gate:
 

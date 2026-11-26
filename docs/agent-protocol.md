@@ -9,7 +9,7 @@ Run a daily paper digest workflow:
 1. Determine the date range to cover.
 2. Collect new research items from enabled sources.
 3. Deduplicate against previous runs.
-4. Score candidates against the configured work context.
+4. Rank papers by their contribution to a tracked research field.
 5. Deep-read the configured number of highest-ranked papers.
 6. Write a rich Chinese Markdown source document.
 7. Render an interactive HTML report when enabled.
@@ -22,7 +22,6 @@ Read these files before collecting:
 
 - `config.yaml`
 - `last_run.json`
-- `seen_papers.json`
 - `sources-reference.md`
 
 If `config.yaml` is missing, tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
@@ -71,50 +70,39 @@ Partial failure is acceptable:
 
 ## Dedup Rules
 
-Deduplicate in this order:
+Keep historical state out of model context. Send the private candidate JSON array to the local helper:
 
-1. arXiv ID exact match.
-2. DOI exact match.
-3. URL exact match.
-4. Normalized title similarity.
+```sh
+python3 scripts/dedup_seen.py filter --input candidates.json > unseen.json
+```
 
-Then remove items already present in `seen_papers.json`.
-
-Normalize titles by lowercasing, removing punctuation, and collapsing whitespace.
+The output contains `candidates` and counts for input, repeated items in the batch, historical matches and unseen items. The helper also accepts stdin. It matches arXiv versions, DOI, normalized URL or Unicode-normalized title, including chains across sources. Keep the returned identity aliases with candidates while ranking; pass only actually processed entries to `record` after success. Empty historical state may be initialized from the template; never load the historical ledger into a prompt.
 
 ## Scoring Rules
 
-Score each candidate against `filter.my_work_context` from `config.yaml`.
+Use `filter.categories` to identify the research field and the problem the paper addresses. Score its contribution to that field using primary evidence. Keep `filter.my_work_context` for commentary after selection.
+
+For each enabled source that supports topic queries, search the configured fields by their own vocabulary. For a sports reconstruction field, include single-view and multi-view work, fast motion in different sports, human–equipment interaction, and biomechanics. Distinguish what was observed (camera views and frame rate), what was reconstructed (pose, equipment trajectory), and what was inferred (forces or joint moments). A useful benchmark or failure analysis can merit selection across sports. In the report, briefly identify fields searched with no qualifying evidence when known; avoid treating a failed search as zero research.
 
 Use these dimensions and weights:
 
 | Dimension | Weight | Evaluates |
 |---|---:|---|
-| Relevance | 35% | Match to the configured work context and categories. |
+| Field contribution | 35% | How much does the work advance an important problem in a tracked field? Consider methods, datasets, measurements and well-supported negative results. |
 | Innovation | 25% | New architecture, method, benchmark, or paradigm. |
 | Impact | 20% | Strong results, open code, strong baselines, or community attention. |
 | Method Quality | 10% | Technical soundness visible from abstract or paper page. |
-| Practicality | 10% | Reproducibility, deployment feasibility, reasonable compute, or actionable ideas. |
+| Practicality | 10% | Whether researchers in the field can reproduce, compare or build on the work. |
 
 Scale final score to `1-10`.
 
-Apply bonuses only when justified:
-
-- Multi-source discovery.
-- Strong editorial or benchmark signal.
-- Direct fit with configured categories.
-- Practical implementation value.
-
-Default bonus guidance:
-
-- Curated website/editorial signal: `+0.5`.
-- Multi-source discovery: `+0.3` per additional independent source, max `+0.6`.
+Use multiple discovery sources and editorial recommendations to locate evidence. The same paper keeps its score, rank and deep-reading priority when the user changes projects or experiment versions. Break ties by strength of primary evidence.
 
 Selection:
 
 1. Keep score `>= filter.threshold`.
 2. Keep at most `filter.max_papers_per_day`.
-3. Generate Chinese structured summaries for selected papers.
+3. Fix the selection and ranking before considering project fit. In each Chinese summary, first explain the field contribution, comparison and evidence limits. Then use the work context to describe a possible application, its prerequisites, or “暂无直接关联”.
 4. If no paper passes the threshold, write a minimal digest noting that no papers passed and still update state if collection succeeded.
 
 ## Reading Depth Rules
@@ -132,13 +120,15 @@ Use a tiered reading policy so the report gains evidence without making every da
    - Record the official PDF separately from the abstract page.
    - Record author-owned project and code URLs when they can be verified.
    - Prefer one representative teaser or method figure from the official paper HTML or author-owned project page. Validate that the URL resolves to an image before recording it.
+   - Place the verified figure next to the Chinese explanation it supports using standalone Markdown image syntax. Write a caption that points to something visible and explains what the reader can learn. For example, identify where the method selects frames and what happens to the frames it keeps. Introduce technical terms in everyday language on first use.
+   - If a figure is unavailable, show a short text flow for a verified method or a compact results table with baseline, metric, units and test conditions. Mark your own diagrams as explanatory. Compare numbers only under matching evaluation conditions.
    - Never use search-result thumbnails, screenshots from secondary articles, or an unrelated generated image as a paper figure.
 4. Label every paper honestly:
    - `全文精读`: method, experiments, and limitations checked in the original paper;
    - `摘要核验`: official abstract and primary metadata checked, without a full-paper claim.
 5. Assign an evidence level: `同行评审`, `预印本`, or `二手发现信号`. A secondary article may aid discovery but must not be graded as paper evidence.
 6. Never infer a full-text result from a blog, search snippet, or secondary article.
-7. Every exact metric or technical claim in `实验与证据` must point to the original paper, table, section, or official project source in the same card.
+7. Every exact metric or technical claim in the evidence section must point to the original paper, table, section, or official project source in the same card.
 8. Target roughly 600-1000 Chinese characters for each full-text review and 250-500 for each abstract-verified paper. Prefer concrete evidence over padding.
 9. If the full text is inaccessible, downgrade the label to `摘要核验` and state the access limitation.
 
@@ -154,9 +144,11 @@ The Markdown file is the canonical content source; the HTML file is the primary 
    - `方案`: the shared technical direction across papers;
    - `效果`: evidence summary plus Go/Watch/No-Go decisions;
    - `今日决策`: the three most important conclusions;
-   - `行动建议`: concrete experiments, expected metrics, effort, and risk;
+   - `行动建议`: where warranted, describe a project application, its prerequisites and a test. A digest can have no project actions;
    - `数据源状态`: one normalized row for every configured source, including disabled and skipped sources.
    - `证据与生成说明`: reading-depth policy, unavailable evidence, and an AI-assisted research disclosure.
+When an evidence gap warrants deeper investigation, add a short “值得继续追的问题” next to the relevant paper. Give the primary link, the comparison or citation worth checking, and what finding would change the interpretation. This is an input for MorrowOS; publish the digest without waiting for its follow-up.
+
 2. Evidence layer: one expandable card per selected paper in the HTML report.
 
 Header:
@@ -207,29 +199,20 @@ Per-paper format:
 **Evidence Level**: 同行评审 / 预印本 / 二手发现信号
 **Links**: [PDF](url) | [代码](url) | [项目主页](url) | [主图](official-image-url)
 
-### 一句话总结
+### 核心突破与做法
+第一句用中文写清核心突破。随后解释方法，配作者原图及图注，写明读者应该观察什么；图或许可不可核验时保留来源链接。
 
-### 为什么重要
+### 关键证据与适用边界
+列出数据、对照、指标及一手出处；说明失效条件、缺失的实验或未核实部分。
 
-### 研究问题与现有瓶颈
+### 与我工作的关联与下一步
+给出适用前提及一个可验证的动作；没有直接关联时如实说明。
 
-### 方法拆解
-
-### 实验与证据
-
-| Dataset / Task | Metric | Proposed | Baseline | Delta |
-|---|---:|---:|---:|---:|
-
-### 局限与风险
-
-### 复现条件
-
-### 与我工作的关联
-
-### 下一步行动
-
-### 证据来源
+### 交给 MorrowOS 追查的问题与一手链接
+写清要复查哪个实验或对照、什么证据会改变判断，并附原文、项目或代码。
 ```
+
+After the decisions, add a separate `## 行业与开源速递（微信信源）`. Aim for 3–5 distinct, verified non-paper releases or industry developments. Include date, what materially changed, the WeChat discovery link, and the original release or changelog link. Verify both publication and original release dates. When evidence is thin publish fewer or explicitly record the gap. Never put these items into paper counts or rankings.
 
 For `摘要核验` papers, keep unavailable sections concise and explicitly say which evidence was not verified. Do not invent missing experiments, compute, code status, or limitations.
 
@@ -249,16 +232,18 @@ python3 scripts/render_digest.py digests/YYYY-MM-DD.md --open-top N
 
 Use `report.html.open_top_n` for `N`. The output is `digests/YYYY-MM-DD.html`.
 
+Every successful dated render also rebuilds `digests/index.html`, a stable local archive that lists all rendered reports newest-first. Users should bookmark this file, select a date there, and use the PaperPulse brand or `日报列表` action in a report to return. The archive contains only relative report filenames and remains private under the existing `digests/*` ignore rule.
+
 The renderer provides:
 
 - an executive header and daily metrics;
 - responsive desktop/mobile layout;
-- sticky navigation on wide screens;
+- a compact decision brief and a direction-filterable table linking to expanded paper cards;
 - searchable, expandable paper cards;
 - visible score, category, reading-depth, and one-line conclusion;
 - an optional official paper figure, compact authorship metadata, and separate paper/PDF/project/code/figure actions;
 - light/dark theme, reading progress, and print styles;
-- optional Mermaid rendering with a readable fallback.
+- offline Mermaid source blocks and document-relative or HTTPS paper figures.
 
 If HTML rendering fails, keep the Markdown source, report the HTML failure, and do not claim that the HTML artifact exists.
 
@@ -315,8 +300,10 @@ When at least one key phase succeeds:
 
 1. Write or update `digests/YYYY-MM-DD.md`.
 2. Render `digests/YYYY-MM-DD.html` when enabled.
-3. Update `seen_papers.json` with selected papers and useful rejected candidates when available.
+3. Run `python3 scripts/dedup_seen.py record --input processed.json` with selected papers and evaluated rejections, including score, selected flag, reading depth and date_seen where available.
 4. Update `last_run.json`.
+
+Every attempted run, including partial and failed runs, writes a private structured summary to `logs/YYYY-MM-DD.json`: date, coverage, status, per-source state, dedup counts, selected count, actual deep-read count, verified WeChat releases, render/archive status, and concise failure reasons. Never include credentials or raw articles. Record only observed counts; use null for unavailable measurements. For repeat attempts on the same date retain the preceding attempt in the log. An already-completed-day skip preserves the existing success record.
 
 When all major phases fail:
 

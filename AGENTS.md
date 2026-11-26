@@ -7,7 +7,7 @@ This repository contains PaperPulse, an agent-ready daily paper digest workflow.
 When asked to run the digest:
 
 1. Read `docs/agent-protocol.md`.
-2. Read `config.yaml`, `last_run.json`, `seen_papers.json`, and `sources-reference.md`.
+2. Read `config.yaml`, `last_run.json`, and `sources-reference.md`.
 3. If `config.yaml` is missing, tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
 4. If either state file is missing, initialize it from the matching `*.example.json` template.
 5. Follow the shared protocol exactly, including the configured reading-depth requirements.
@@ -26,3 +26,5 @@ When asked to run the digest:
 - Codex prompt: `codex/agent-copy-prompt.md`
 - Claude Code command: `.claude/commands/paper-digest.md`
 - Shared workflow: `docs/agent-protocol.md`
+
+Use `python3 scripts/dedup_seen.py filter --input candidates.json` before scoring and `record --input processed.json` after success. Keep the historical ledger outside model context. Write the four-section paper cards and separate verified WeChat release roundup from the shared protocol. Write `logs/YYYY-MM-DD.json` on success, partial success, or failure.

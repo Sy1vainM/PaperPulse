@@ -18,7 +18,6 @@ Read `docs/agent-protocol.md` first, then execute phases 0-5 below. User argumen
 1. Read these files from the project root:
    - `config.yaml`
    - `last_run.json`
-   - `seen_papers.json`
    - `sources-reference.md`
 2. If `config.yaml` is missing, stop and tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
 3. If `last_run.json` or `seen_papers.json` is missing, initialize it from the matching `*.example.json` template.
@@ -67,15 +66,7 @@ Collection strategy:
 
 After all enabled sources complete:
 
-1. Remove entries already present in `seen_papers.json`.
-2. Cross-source deduplicate and merge metadata by:
-   - arXiv ID exact match.
-   - DOI exact match.
-   - URL exact match.
-   - Normalized title similarity.
-3. Normalize titles by lowercasing, removing punctuation, and collapsing whitespace.
-4. When merging, keep the richest metadata and record all discovered sources in a `sources` list.
-5. Report: `Collected N unique items from X/Y sources (Z failed: names)`.
+Run `python3 scripts/dedup_seen.py filter --input candidates.json` and score only the returned candidates. The helper reads the private ledger locally. Keep aliases with the processed entries and use the returned counts in the daily log.
 
 Multi-source discovery is a positive scoring signal.
 
@@ -216,19 +207,7 @@ If `archive.obsidian.enabled` is true:
 
 Only update state if at least one key phase succeeded.
 
-Update `seen_papers.json`:
-
-```json
-{
-  "arxiv_id_or_url": {
-    "title": "Paper title",
-    "score": 7.5,
-    "selected": true,
-    "date_seen": "YYYY-MM-DD",
-    "source": "source1, source2"
-  }
-}
-```
+Run `python3 scripts/dedup_seen.py record --input processed.json` after success. Write the private daily JSON run summary on both success and failure as specified in the shared protocol.
 
 Update `last_run.json`:
 
