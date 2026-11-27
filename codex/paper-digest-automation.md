@@ -32,3 +32,7 @@ End with a concise run report:
 If `config.yaml` is missing, stop and tell the user to copy `config.example.yaml` to `config.yaml` and customize it.
 
 Use `python3 scripts/dedup_seen.py filter --input candidates.json` before scoring and `record --input processed.json` after success. Keep the historical ledger outside model context. Write the four-section paper cards and separate verified WeChat release roundup from the shared protocol. Write `logs/YYYY-MM-DD.json` on success, partial success, or failure.
+
+## Daily Feishu card
+
+After writing the dated Markdown and HTML, run `python3 scripts/send_feishu_card.py --digest digests/YYYY-MM-DD.md --send` when local feishu.enabled is true. Use the digest produced by this run. Preview with `--dry-run --output-json preview.json`. Record delivery success or warning in the daily structured log. Keep the digest and archival state on delivery failure. Retries for the same digest use the same daily idempotency key. Keep recipient IDs and installation paths in the ignored local config.

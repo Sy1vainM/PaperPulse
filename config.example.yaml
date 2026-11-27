@@ -115,3 +115,10 @@ paths:
   last_run: "last_run.json"
   digests: "digests"
   logs: "logs"
+
+feishu:
+  enabled: false
+  identity: "bot"
+  receive_id_type: "user_id"
+  receive_id: ""
+  lark_cli_bin: ""

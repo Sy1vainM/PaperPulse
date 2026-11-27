@@ -27,7 +27,7 @@ PRIVATE_FIELD_PATTERN = re.compile(
 )
 HOME_PATH_PATTERN = re.compile(r"/(Users|home)/([^/\s]+)/")
 TOKEN_PATTERN = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9_-]{16,})",
+    r"(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|(?:ou_|oc_)[a-f0-9]{16,}|cli_[a-f0-9]{12,}|xox[baprs]-[A-Za-z0-9_-]{16,})",
     re.I,
 )
 SAFE_HOME_NAMES = {"user", "username", "example", "your_name", "your-name"}

@@ -332,3 +332,7 @@ Report:
 - Do not commit private `config.yaml`.
 - Do not expose API keys, tokens, cookies, private paths, private Notion database IDs, or private Obsidian vault paths.
 - Prefer source attribution and uncertainty over confident guessing.
+
+## Daily Feishu card
+
+After writing the dated Markdown and HTML, run `python3 scripts/send_feishu_card.py --digest digests/YYYY-MM-DD.md --send` when local feishu.enabled is true. Use the digest produced by this run. Preview with `--dry-run --output-json preview.json`. Record delivery success or warning in the daily structured log. Keep the digest and archival state on delivery failure. Retries for the same digest use the same daily idempotency key. Keep recipient IDs and installation paths in the ignored local config.
